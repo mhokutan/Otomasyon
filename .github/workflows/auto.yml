@@ -2,8 +2,8 @@ name: yt-auto
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # Her gün 06:00 UTC (TR sabahı için ayarlayabilirsin)
-  workflow_dispatch: {}     # Elle çalıştırma
+    - cron: '0 6 * * *'   # Her gün 06:00 UTC
+  workflow_dispatch: {}
 
 jobs:
   build-run:
@@ -11,10 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ffmpeg
+      - name: Install ffmpeg + fonts
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,10 +31,11 @@ jobs:
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: ${{ secrets.YT_PRIVACY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}   # (Opsiyonel) Hugging Face token (free)
         run: python src/main.py
 
       - name: Upload artifact (video + assets)
-        if: always()   # Önceki adım fail olsa bile çıktı dosyalarını yükle
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: output
