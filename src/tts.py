@@ -1,10 +1,11 @@
 from gtts import gTTS
 from pydub import AudioSegment
-import io, re
+import io
+import re
 
 def split_for_tts(text, max_chars=200):
     # Noktalamaya göre parçalayıp çok uzunsa böl
-    parts = re.split(r'(?<=[.!?])\\s+', text.strip())
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
     chunks = []
     for p in parts:
         p = p.strip()
@@ -13,7 +14,6 @@ def split_for_tts(text, max_chars=200):
         if len(p) <= max_chars:
             chunks.append(p)
         else:
-            # kaba bölme
             s = 0
             while s < len(p):
                 chunks.append(p[s:s+max_chars])
