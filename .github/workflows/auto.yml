@@ -26,23 +26,32 @@ jobs:
 
       - name: Run pipeline
         env:
-          # --- TEMA / KONU ---
-          THEME: crypto                      # news | crypto | (ileride sports)
-          CRYPTO_COINS: bitcoin,ethereum,solana  # virgülle coin id listesi
-          VIDEO_TITLE_PREFIX: ${{ secrets.VIDEO_TITLE_PREFIX }}
+          # --- KONU / TEMA ---
+          THEME: news                     # news | crypto
+          CRYPTO_COINS: bitcoin,ethereum,solana
 
-          # --- YouTube OAuth (varsa yükler) ---
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-          YT_PRIVACY: ${{ secrets.YT_PRIVACY }}
+          # --- YouTube OAuth (istiyorsan doldurursun; boşsa sadece artifact üretir) ---
+          YT_CLIENT_ID: ""
+          YT_CLIENT_SECRET: ""
+          YT_REFRESH_TOKEN: ""
+          YT_PRIVACY: "unlisted"
 
-          # --- Opsiyonel: AI görsel ---
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # --- TTS (daha hızlı ve akıcı) ---
+          TTS_ATEMPO: "1.35"              # 1.25–1.40 arası deneyebilirsin
+          TTS_GAP_MS: "30"
 
-          # --- TTS ayarı (akıcılık) ---
-          TTS_SPEED: "1.12"
-          TTS_GAP_MS: "80"
+          # --- Görsel hareket ---
+          BG_ZOOM_PER_SEC: "0.0010"       # arka plan yavaş zoom
+          XFADE_SEC: "0.6"                # slaytlar arası crossfade süresi (sn)
+
+          # --- Haber ticker ayarları ---
+          TICKER_SPEED: "140"             # px/sn
+          TICKER_H: "120"                 # ticker yüksekliği (px)
+
+          # --- (opsiyonel) AI görsel için HF token; boş kalabilir ---
+          HF_TOKEN: ""
+
+          VIDEO_TITLE_PREFIX: "Günlük Özet:"
         run: python src/main.py
 
       - name: Upload artifact (video + assets)
