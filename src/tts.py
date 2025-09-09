@@ -1,7 +1,6 @@
-import os, io, re
+import os, io, re, tempfile, subprocess
 from gtts import gTTS
 from pydub import AudioSegment
-from pydub.effects import speedup
 
 def split_for_tts(text, max_chars=200):
     parts = re.split(r'(?<=[.!?])\s+', text.strip())
@@ -19,13 +18,27 @@ def split_for_tts(text, max_chars=200):
                 s += max_chars
     return chunks
 
+def _ffmpeg_atempo(in_path: str, out_path: str, atempos: str, bitrate: str):
+    """
+    atempos: '1.25' ya da '1.25,1.15' gibi virgüllü liste (FFmpeg zincirlenir)
+    """
+    filters = ",".join([f"atempo={v.strip()}" for v in atempos.split(",") if v.strip()])
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", in_path,
+        "-filter:a", filters,
+        "-ar", "44100", "-ac", "2", "-b:a", bitrate,
+        out_path
+    ]
+    subprocess.run(cmd, check=True)
+
 def script_to_mp3(text, out_path, lang="tr"):
-    gap_ms = int(os.getenv("TTS_GAP_MS", "80"))          # cümleler arası boşluk
-    speed  = float(os.getenv("TTS_SPEED", "1.12"))        # 1.12 ≈ %12 hızlı
-    bitrate = os.getenv("TTS_BITRATE", "128k")            # çıktı bitrate
+    gap_ms = int(os.getenv("TTS_GAP_MS", "40"))          # cümle arası daha kısa boşluk
+    atempos = os.getenv("TTS_ATEMPO", "1.25")            # 1.25 ≈ %25 daha hızlı
+    bitrate = os.getenv("TTS_BITRATE", "128k")
 
     chunks = split_for_tts(text)
-    final = AudioSegment.silent(duration=200)
+    final = AudioSegment.silent(duration=150)
     for ch in chunks:
         tts = gTTS(ch, lang=lang)
         buf = io.BytesIO()
@@ -34,12 +47,15 @@ def script_to_mp3(text, out_path, lang="tr"):
         seg = AudioSegment.from_file(buf, format="mp3")
         final += seg + AudioSegment.silent(duration=gap_ms)
 
-    # Standart ses parametreleri (uyumluluk):
+    # Standart parametreler
     final = final.set_frame_rate(44100).set_channels(2)
 
-    # Hızlandır (pitch’i koruyacak şekilde)
-    if abs(speed - 1.0) > 0.01:
-        final = speedup(final, playback_speed=speed, chunk_size=50, crossfade=20)
+    # Geçici dosyaya yaz
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+        tmp_path = tmp.name
+    final.export(tmp_path, format="mp3", bitrate=bitrate)
 
-    final.export(out_path, format="mp3", bitrate=bitrate)
+    # FFmpeg atempo zinciri ile hızlandır (pitch korunur)
+    _ffmpeg_atempo(tmp_path, out_path, atempos, bitrate)
+
     return out_path
