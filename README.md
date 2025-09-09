@@ -1,16 +1,30 @@
-# YouTube Shorts Otomasyon (Ücretsiz Orkestrasyon)
+# YouTube Shorts Otomasyon (Ücretsiz, OpenAI yok)
 
-Tamamen **GitHub Actions** ile çalışır (ücretsiz). LLM yok; metin üretimi kural tabanlı; TTS **gTTS**; render **FFmpeg**. İstersen YouTube’a otomatik yükler.
+- Orkestrasyon: **GitHub Actions** (ücretsiz)
+- Metin: kural tabanlı
+- TTS: **gTTS** (ücretsiz)
+- Render: **FFmpeg** (1080×1920)
+- YouTube yükleme: OAuth ile (opsiyonel)
 
 ## Hızlı Kurulum
-1. Bu repo dosyalarını aynen oluştur / kopyala.
-2. GitHub → Settings → Secrets → Actions:
-   - (Opsiyonel otomatik upload) `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN`
-   - (Opsiyonel) `VIDEO_TITLE_PREFIX` (örn: `Günün Özeti:`)
-   - (Opsiyonel) `YT_PRIVACY` (`private`/`unlisted`/`public`, varsayılan `unlisted`)
-3. Actions tabında `yt-auto` workflow’u **Run workflow** ile tetikle. Bittiğinde **Artifacts → output** içinde `video-*.mp4` var.
+1. Bu dosyaları repo’ya ekle.
+2. GitHub → **Settings → Secrets and variables → Actions**:
+   - (Otomatik upload için) `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN`
+   - (Opsiyonel) `YT_PRIVACY` = `unlisted` / `public` / `private`  
+     > Boş/hatalıysa otomatik **`unlisted`** kullanılır.
+   - (Opsiyonel) `VIDEO_TITLE_PREFIX` = `Günün Özeti:`
+3. **Actions → yt-auto → Run workflow**.  
+   - Çıkışlar **Artifacts → output**’ta.
+   - Secret’lar varsa otomatik YouTube’a yükler.
 
-## YouTube Refresh Token nasıl alınır? (bir kere)
-Yerelde Python çalıştır:
-```bash
-pip install google-auth-oauthlib google-api-python-client google-auth-httplib2
+## YouTube OAuth (kısaca)
+- Google Cloud Console → YouTube Data API v3 **Enable**
+- OAuth consent screen: **External**, **Test users**’a Gmail’ini ekle.
+- **OAuth client (Web)** oluştur, redirect URI:  
+  `https://developers.google.com/oauthplayground`
+- **OAuth Playground** (Use your own credentials) ile `youtube.upload` scope’tan **refresh_token** al → Secrets’a koy.
+
+## Özelleştirme
+- RSS kaynağı: `src/scriptgen.py → RSS_URL_TR`
+- Senaryo kalıbı: `make_script_tr()` fonksiyonu
+- Video üretimi: `src/video.py` (FFmpeg komutunu zenginleştirebilirsin)
