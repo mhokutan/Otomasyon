@@ -2,7 +2,7 @@ name: yt-auto
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # Her gün 06:00 UTC
+    - cron: '0 6 * * *'   # her gün 06:00 UTC (TR ~09:00)
   workflow_dispatch: {}
 
 jobs:
@@ -26,12 +26,23 @@ jobs:
 
       - name: Run pipeline
         env:
+          # --- TEMA / KONU ---
+          THEME: crypto                      # news | crypto | (ileride sports)
+          CRYPTO_COINS: bitcoin,ethereum,solana  # virgülle coin id listesi
           VIDEO_TITLE_PREFIX: ${{ secrets.VIDEO_TITLE_PREFIX }}
+
+          # --- YouTube OAuth (varsa yükler) ---
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: ${{ secrets.YT_PRIVACY }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}   # (Opsiyonel) Hugging Face token (free)
+
+          # --- Opsiyonel: AI görsel ---
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+          # --- TTS ayarı (akıcılık) ---
+          TTS_SPEED: "1.12"
+          TTS_GAP_MS: "80"
         run: python src/main.py
 
       - name: Upload artifact (video + assets)
