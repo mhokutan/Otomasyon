@@ -1,12 +1,10 @@
-import os
-import datetime
-import pathlib
-import json
-from scriptgen import fetch_trends_tr, make_script_tr
+import os, datetime, pathlib, json
+from scriptgen import fetch_trends_tr, make_script_tr, make_script_crypto
 from tts import script_to_mp3
 from video import make_slideshow_video
 from youtube_upload import try_upload_youtube
-from gen_images import build_images_for_items  # NEW
+from gen_images import build_images_for_items
+from crypto import build_crypto_items_and_images  # NEW
 
 OUT_DIR = pathlib.Path("out")
 OUT_DIR.mkdir(exist_ok=True)
@@ -20,42 +18,50 @@ def sanitize_privacy(value: str) -> str:
 
 def main():
     stamp = now_stamp()
+    theme = (os.getenv("THEME") or "news").strip().lower()
 
-    print(">> Fetching trends...")
-    items = fetch_trends_tr(limit=3)
-    if not items:
-        print("No RSS items found; aborting.")
-        return
+    if theme == "crypto":
+        # Coin listesi
+        coins = [c.strip() for c in (os.getenv("CRYPTO_COINS") or "bitcoin,ethereum,solana").split(",") if c.strip()]
+        print(">> Fetching crypto...")
+        coin_items, images = build_crypto_items_and_images(coins, OUT_DIR, stamp)
+        titles = [f"{ci['id'].upper()} {_fmt(ci['price'])} ({ci['change']:+.2f}% 24s)" for ci in coin_items]
 
-    print(">> Generating script...")
-    script = make_script_tr(items)
+        print(">> Generating script (crypto)...")
+        script = make_script_crypto(coin_items)
+    else:
+        print(">> Fetching trends (news)...")
+        items = fetch_trends_tr(limit=3)
+        titles = [it["title"] for it in items]
+        print(">> Generating script (news)...")
+        script = make_script_tr(items)
+
+        # Görsel: HF varsa AI; yoksa placeholder
+        print(">> Building visuals (AI if HF_TOKEN present)...")
+        images = build_images_for_items(titles, OUT_DIR, prefix=f"ai-{stamp}")
+
     print("SCRIPT:\n", script)
 
-    meta = {"timestamp": stamp, "items": items, "script": script}
-    (OUT_DIR / f"meta-{stamp}.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    meta = {"timestamp": stamp, "theme": theme, "titles": titles, "script": script}
+    (OUT_DIR / f"meta-{stamp}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # TTS
     mp3_path = OUT_DIR / f"voice-{stamp}.mp3"
     print(">> TTS...")
     script_to_mp3(script, str(mp3_path), lang="tr")
 
-    print(">> Building visuals (AI if HF_TOKEN present)...")
-    titles = [it["title"] for it in items]
-    images = build_images_for_items(titles, OUT_DIR, prefix=f"ai-{stamp}")  # returns list of PNG paths
-
+    # Video
     mp4_path = OUT_DIR / f"video-{stamp}.mp4"
-    print(">> FFmpeg render (vertical 1080x1920 slideshow + captions + waveform)...")
+    print(">> Render video...")
     make_slideshow_video(images, titles, str(mp3_path), str(mp4_path))
     print(">> Done:", mp4_path)
 
-    # Optional: upload
+    # YouTube (opsiyonel)
     print(">> Trying YouTube upload (if creds exist)...")
-    title_prefix = os.getenv("VIDEO_TITLE_PREFIX", "Günün Özeti:")
-    first_title = items[0]["title"] if items else "Günün Özeti"
+    title_prefix = os.getenv("VIDEO_TITLE_PREFIX", "Kripto Özeti:")
+    first_title = titles[0] if titles else "Günlük Kripto"
     title = f"{title_prefix} {first_title}".strip()[:95]
-    description = "Kaynak: Google News RSS\n#haber #gündem #kısaözet"
-
+    description = "Kaynak: CoinGecko (fiyat/sparkline)\n#kripto #bitcoin #ethereum #solana #günlüközet"
     privacy = sanitize_privacy(os.getenv("YT_PRIVACY"))
 
     uploaded_url = None
@@ -69,6 +75,14 @@ def main():
         (OUT_DIR / f"youtube-{stamp}.txt").write_text(uploaded_url, encoding="utf-8")
     else:
         print("YouTube upload skipped or failed — video kept as artifact.")
+
+def _fmt(v: float) -> str:
+    if v >= 1000:
+        return f"${v:,.0f}"
+    elif v >= 1:
+        return f"${v:,.2f}"
+    else:
+        return f"${v:.6f}".rstrip("0").rstrip(".")
 
 if __name__ == "__main__":
     main()
