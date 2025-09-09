@@ -3,6 +3,7 @@ from typing import List
 from pydub import AudioSegment
 
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+BG_ZOOM_PER_SEC = float(os.getenv("BG_ZOOM_PER_SEC", "0.0006"))  # daha hızlı hareket için artır
 
 def _dur_sec(mp3_path):
     audio = AudioSegment.from_file(mp3_path)
@@ -23,25 +24,22 @@ def _wrap_lines(text: str, max_len: int = 48) -> str:
 
 def _make_slide(image_path: str, caption: str, duration: float, out_path: str):
     """
-    1 giriş: image (loop). Filtre zinciri:
-      - split -> [bg][fg]
-      - [bg]: scale to 9:16 + boxblur -> arka plan
-      - [fg]: scale + crop 9:16 -> ön plan
-      - overlay merkezle
-      - üstte yarı saydam bar + textfile başlık
+    Dinamik arka plan: blur + yavaş zoom (zoompan).
+    Ön plan: 9:16 kırpılmış net görsel.
+    Üstte yarı saydam bar + başlık (textfile ile güvenli).
     """
     wrapped = _wrap_lines(caption or "", max_len=48)
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8") as tf:
         tf.write(wrapped)
         textfile_path = tf.name
 
+    # zoompan: z='if(lte(on,1),1.0,zoom+BG_ZOOM_PER_SEC)'  d=1  s=1080x1920
     vf = (
-        "split=2[bg][fg];"
-        "[bg]scale=1080:1920:force_original_aspect_ratio=increase,"
-        "boxblur=20:1[bg2];"
-        "[fg]scale=1080:1920:force_original_aspect_ratio=increase,"
-        "crop=1080:1920[fg2];"
-        "[bg2][fg2]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,"
+        "split=2[bgsrc][fgsrc];"
+        f"[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,boxblur=20:1,"
+        f"zoompan=z='if(lte(on,1),1.0,zoom+{BG_ZOOM_PER_SEC})':d=1:s=1080x1920[bg];"
+        "[fgsrc]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[fg];"
+        "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,"
         "drawbox=x=0:y=60:w=iw:h=160:color=black@0.35:t=fill,"
         f"drawtext=fontfile='{FONT}':textfile='{textfile_path}':"
         "fontcolor=white:fontsize=48:line_spacing=8:borderw=2:bordercolor=black@0.6:"
@@ -54,7 +52,7 @@ def _make_slide(image_path: str, caption: str, duration: float, out_path: str):
             "-loop", "1", "-t", f"{duration:.2f}", "-i", image_path,
             "-vf", vf,
             "-r", "30",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
             "-pix_fmt", "yuv420p",
             "-an",
             "-movflags", "+faststart",
@@ -77,7 +75,7 @@ def _concat_slides(slide_paths: List[str], audio_path: str, out_path: str):
             "-f", "concat", "-safe", "0", "-i", list_path,
             "-i", audio_path,
             "-shortest",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
             "-movflags", "+faststart",
@@ -95,7 +93,7 @@ def _overlay_waveform(in_mp4: str, out_mp4: str):
         "[0:a]showwaves=s=1080x200:mode=cline:rate=30[wf];"
         "[0:v][wf]overlay=0:main_h-200-40,format=yuv420p",
         "-map", "0:v", "-map", "0:a",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
         "-c:a", "copy",
         "-movflags", "+faststart",
         out_mp4
