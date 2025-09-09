@@ -41,20 +41,18 @@ def _make_slide(image_path: str, caption: str, duration: float, out_path: str,
         textfile_path = tf.name
 
     ticker_file = None
-    has_ticker = theme == "news" and (ticker_text or "").strip() != ""
+    has_ticker = (theme == "news") and (ticker_text or "").strip() != ""
     if has_ticker:
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8") as tt:
             tt.write(ticker_text.strip())
             ticker_file = tt.name
 
-    # Filtre zinciri
     vf_parts = [
         "split=2[bgsrc][fgsrc]",
         f"[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,boxblur=20:1,"
         f"zoompan=z='if(lte(on,1),1.0,zoom+{BG_ZOOM_PER_SEC})':d=1:s=1080x1920[bg]",
         "[fgsrc]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[fg]",
         "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,",
-        # üst başlık bar + caption
         "drawbox=x=0:y=60:w=iw:h=160:color=black@0.35:t=fill",
         f",drawtext=fontfile='{FONT}':textfile='{textfile_path}':"
         "fontcolor=white:fontsize=48:line_spacing=8:borderw=2:bordercolor=black@0.6:"
@@ -62,14 +60,12 @@ def _make_slide(image_path: str, caption: str, duration: float, out_path: str,
     ]
 
     if theme == "news":
-        # sol üst kırmızı BREAKING NEWS etiketi
         vf_parts.append(
             f",drawtext=fontfile='{FONT}':text='BREAKING NEWS':"
             "fontcolor=white:fontsize=40:box=1:boxcolor=red@0.85:boxborderw=20:x=40:y=30"
         )
 
     if has_ticker and ticker_file:
-        # altta ticker bandı + kayan yazı
         vf_parts.append(
             f",drawbox=x=0:y=main_h-{TICKER_H}:w=iw:h={TICKER_H}:color=black@0.55:t=fill"
             f",drawtext=fontfile='{FONT}':textfile='{ticker_file}':"
@@ -99,29 +95,100 @@ def _make_slide(image_path: str, caption: str, duration: float, out_path: str,
             try: os.unlink(ticker_file)
             except Exception: pass
 
-def _xfade_and_add_audio(slide_paths: List[str], audio_path: str, out_path: str, seg: float):
+def _xfade_video(slide_paths: List[str], out_path: str, seg: float):
     """
-    Tüm slayt videolarını (sessiz) al, aralarına xfade ile yumuşak geçiş ekle,
-    sonra MP3 sesi bindir.
+    Tüm slaytları xfade ile tek videoda birleştirir (sessiz).
+    offset_k = k*(seg - XFADE_SEC) formülü ile zincirleme xfade.
     """
-    if len(slide_paths) == 1:
-        # tek slayt: sadece sesi ekle
+    n = len(slide_paths)
+    if n == 1:
+        # Tek slayt ise doğrudan kopyala (video-only)
         cmd = [
-            "ffmpeg", "-y",
-            "-i", slide_paths[0],
-            "-i", audio_path,
-            "-shortest",
+            "ffmpeg", "-y", "-i", slide_paths[0],
+            "-an",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
-            "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p", "-r", "30", "-movflags", "+faststart",
             out_path
         ]
         subprocess.run(cmd, check=True)
         return
 
-    # Çoklu giriş
     cmd = ["ffmpeg", "-y"]
     for p in slide_paths:
         cmd += ["-i", p]
-    cmd += ["-i", audio
+
+    filters = []
+    prev = "[0:v]"
+    for i in range(1, n):
+        cur = f"[{i}:v]"
+        out = f"[v{i}]"
+        offset = i * (seg - XFADE_SEC)
+        filters.append(f"{prev}{cur}xfade=transition=fade:duration={XFADE_SEC}:offset={offset}{out}")
+        prev = out
+    filters.append(f"{prev}format=yuv420p[vout]")
+
+    cmd += [
+        "-filter_complex", ";".join(filters),
+        "-map", "[vout]",
+        "-r", "30",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-movflags", "+faststart",
+        out_path
+    ]
+    subprocess.run(cmd, check=True)
+
+def _mux_audio(video_in: str, audio_mp3: str, out_path: str):
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_in,
+        "-i", audio_mp3,
+        "-shortest",
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart",
+        out_path
+    ]
+    subprocess.run(cmd, check=True)
+
+def _overlay_waveform(in_mp4: str, out_mp4: str, has_ticker: bool):
+    bottom_margin = 40 + (TICKER_H if has_ticker else 0)
+    overlay_y = f"main_h-200-{bottom_margin}"
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", in_mp4,
+        "-filter_complex",
+        f"[0:a]showwaves=s=1080x200:mode=cline:rate=30[wf];"
+        f"[0:v][wf]overlay=0:{overlay_y},format=yuv420p",
+        "-map", "0:v", "-map", "0:a",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        out_mp4
+    ]
+    subprocess.run(cmd, check=True)
+
+def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str, out_mp4: str,
+                         theme: str = "news", ticker_text: str | None = None):
+    total = _dur_sec(audio_mp3)
+    n = max(1, len(images))
+    seg = max(6, total / n)  # her slayt en az 6 sn
+
+    # 1) Slaytları üret
+    slide_paths = []
+    for idx, img in enumerate(images):
+        slide_mp4 = f"/tmp/slide_{idx+1}.mp4"
+        cap = captions[idx] if idx < len(captions) else ""
+        _make_slide(img, cap, seg, slide_mp4, theme=theme, ticker_text=ticker_text)
+        slide_paths.append(slide_mp4)
+
+    # 2) XFADE ile birleştir (sessiz video)
+    temp_xfade = "/tmp/xfaded.mp4"
+    _xfade_video(slide_paths, temp_xfade, seg)
+
+    # 3) Sesi ekle (mux)
+    temp_with_audio = "/tmp/with_audio.mp4"
+    _mux_audio(temp_xfade, audio_mp3, temp_with_audio)
+
+    # 4) Waveform’u bindir (ticker varsa çakışmayacak yükseklikte)
+    has_ticker = (theme == "news") and (ticker_text or "").strip() != ""
+    _overlay_waveform(temp_with_audio, out_mp4, has_ticker)
