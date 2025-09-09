@@ -1,4 +1,4 @@
-import subprocess, shlex, tempfile, os
+import subprocess, tempfile, os
 from typing import List
 from pydub import AudioSegment
 
@@ -8,42 +8,69 @@ def _dur_sec(mp3_path):
     audio = AudioSegment.from_file(mp3_path)
     return max(8, round(len(audio) / 1000))  # en az 8 sn
 
-def _escape_drawtext(text: str) -> str:
-    # ffmpeg drawtext için temel kaçışlar
-    return text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+def _wrap_lines(text: str, max_len: int = 48) -> str:
+    """
+    Basit sözcük bazlı satır kaydırma.
+    Çok uzun başlıkları 2-3 satıra böler; drawtext kutusuna sığar.
+    """
+    words = text.split()
+    lines, line = [], []
+    for w in words:
+        if sum(len(x) for x in line) + len(line) + len(w) <= max_len:
+            line.append(w)
+        else:
+            lines.append(" ".join(line))
+            line = [w]
+    if line:
+        lines.append(" ".join(line))
+    return "\n".join(lines[:3])  # en fazla 3 satır
 
 def _make_slide(image_path: str, caption: str, duration: float, out_path: str):
-    caption = _escape_drawtext(caption[:110])
+    # Uzun / tırnaklı başlıkları güvenle çizmek için textfile kullan
+    wrapped = _wrap_lines(caption or "", max_len=48)
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8") as tf:
+        tf.write(wrapped)
+        textfile_path = tf.name
+
     vf = (
-        # NOT: force_original_aspect_ratio=cover yerine increase kullanılmalı
-        # increase + crop = 'cover' etkisi
+        # 9:16 doldur: increase + crop = 'cover' etkisi
         f"scale=1080:1920:force_original_aspect_ratio=increase,"
         f"crop=1080:1920,"
-        f"drawbox=x=0:y=60:w=iw:h=120:color=black@0.35:t=fill,"
-        f"drawtext=fontfile='{FONT}':text='{caption}':fontcolor=white:fontsize=48:"
-        f"borderw=2:bordercolor=black@0.6:x=(w-text_w)/2:y=90"
+        # üstte yarı saydam şerit
+        f"drawbox=x=0:y=60:w=iw:h=160:color=black@0.35:t=fill,"
+        # metin: textfile ile güvenli
+        f"drawtext=fontfile='{FONT}':textfile='{textfile_path}':"
+        f"fontcolor=white:fontsize=48:line_spacing=8:borderw=2:bordercolor=black@0.6:"
+        f"text_shaping=1:x=(w-text_w)/2:y=90"
     )
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1", "-t", f"{duration:.2f}", "-i", image_path,
-        "-vf", vf,
-        "-r", "30",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-pix_fmt", "yuv420p",
-        "-an",
-        "-movflags", "+faststart",
-        out_path
-    ]
-    subprocess.run(cmd, check=True)
+
+    try:
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-t", f"{duration:.2f}", "-i", image_path,
+            "-vf", vf,
+            "-r", "30",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            "-movflags", "+faststart",
+            out_path
+        ]
+        subprocess.run(cmd, check=True)
+    finally:
+        try:
+            os.unlink(textfile_path)
+        except Exception:
+            pass
 
 def _concat_slides(slide_paths: List[str], audio_path: str, out_path: str):
     # Concat demuxer ile video birleştir, sonra tek adımda ses ekle
+    import tempfile
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
         for p in slide_paths:
             f.write(f"file '{p}'\n")
         list_path = f.name
     try:
-        # concat + ses ekle
         cmd = [
             "ffmpeg", "-y",
             "-f", "concat", "-safe", "0", "-i", list_path,
@@ -60,7 +87,7 @@ def _concat_slides(slide_paths: List[str], audio_path: str, out_path: str):
         os.unlink(list_path)
 
 def _overlay_waveform(in_mp4: str, out_mp4: str):
-    # Varolan videonun sesinden waveform üretip altta overlay ediyoruz (200px yükseklik)
+    # Ses dalgasını altta 200px olarak bindir
     cmd = [
         "ffmpeg", "-y",
         "-i", in_mp4,
@@ -79,15 +106,18 @@ def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str,
     total = _dur_sec(audio_mp3)
     n = max(1, len(images))
     seg = max(6, total / n)  # her slayt en az 6 sn
-    # Önce tek tek slaytlar
+
+    # Slaytlar
     slide_paths = []
     for idx, img in enumerate(images):
         slide_mp4 = f"/tmp/slide_{idx+1}.mp4"
         cap = captions[idx] if idx < len(captions) else ""
         _make_slide(img, cap, seg, slide_mp4)
         slide_paths.append(slide_mp4)
+
     # Slaytları birleştir + ses
     temp_concat = "/tmp/concat_with_audio.mp4"
     _concat_slides(slide_paths, audio_mp3, temp_concat)
+
     # Waveform overlay
     _overlay_waveform(temp_concat, out_mp4)
