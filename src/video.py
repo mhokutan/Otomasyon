@@ -15,7 +15,9 @@ def _escape_drawtext(text: str) -> str:
 def _make_slide(image_path: str, caption: str, duration: float, out_path: str):
     caption = _escape_drawtext(caption[:110])
     vf = (
-        f"scale=1080:1920:force_original_aspect_ratio=cover,"
+        # NOT: force_original_aspect_ratio=cover yerine increase kullanılmalı
+        # increase + crop = 'cover' etkisi
+        f"scale=1080:1920:force_original_aspect_ratio=increase,"
         f"crop=1080:1920,"
         f"drawbox=x=0:y=60:w=iw:h=120:color=black@0.35:t=fill,"
         f"drawtext=fontfile='{FONT}':text='{caption}':fontcolor=white:fontsize=48:"
