@@ -1,0 +1,40 @@
+name: yt-auto
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # her gün 06:00 UTC (~09:00 Türkiye kış, ~09:00/10:00 yaz)
+  workflow_dispatch: {}
+
+jobs:
+  build-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline
+        env:
+          VIDEO_TITLE_PREFIX: ${{ secrets.VIDEO_TITLE_PREFIX }}
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          YT_PRIVACY: ${{ secrets.YT_PRIVACY }}
+        run: python src/main.py
+
+      - name: Upload artifact (video + assets)
+        uses: actions/upload-artifact@v4
+        with:
+          name: output
+          path: out/*
