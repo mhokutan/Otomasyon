@@ -2,8 +2,8 @@ name: yt-auto
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # her gün 06:00 UTC (~09:00 Türkiye kış, ~09:00/10:00 yaz)
-  workflow_dispatch: {}
+    - cron: '0 6 * * *'   # Her gün 06:00 UTC (TR sabahı için ayarlayabilirsin)
+  workflow_dispatch: {}     # Elle çalıştırma
 
 jobs:
   build-run:
@@ -34,6 +34,7 @@ jobs:
         run: python src/main.py
 
       - name: Upload artifact (video + assets)
+        if: always()   # Önceki adım fail olsa bile çıktı dosyalarını yükle
         uses: actions/upload-artifact@v4
         with:
           name: output
