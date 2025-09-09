@@ -3,7 +3,12 @@ from typing import List
 from pydub import AudioSegment
 
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-BG_ZOOM_PER_SEC = float(os.getenv("BG_ZOOM_PER_SEC", "0.0006"))  # daha hızlı hareket için artır
+
+# Env ayarları
+BG_ZOOM_PER_SEC = float(os.getenv("BG_ZOOM_PER_SEC", "0.0006"))
+XFADE_SEC       = float(os.getenv("XFADE_SEC", "0.6"))
+TICKER_SPEED    = float(os.getenv("TICKER_SPEED", "120"))
+TICKER_H        = int(os.getenv("TICKER_H", "120"))
 
 def _dur_sec(mp3_path):
     audio = AudioSegment.from_file(mp3_path)
@@ -22,29 +27,57 @@ def _wrap_lines(text: str, max_len: int = 48) -> str:
         lines.append(" ".join(line))
     return "\n".join(lines[:3])  # en fazla 3 satır
 
-def _make_slide(image_path: str, caption: str, duration: float, out_path: str):
+def _make_slide(image_path: str, caption: str, duration: float, out_path: str,
+                theme: str = "news", ticker_text: str | None = None):
     """
     Dinamik arka plan: blur + yavaş zoom (zoompan).
     Ön plan: 9:16 kırpılmış net görsel.
-    Üstte yarı saydam bar + başlık (textfile ile güvenli).
+    Üstte yarı saydam başlık bar + (news ise) BREAKING NEWS etiketi.
+    Altta (news ise) kayan ticker.
     """
     wrapped = _wrap_lines(caption or "", max_len=48)
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8") as tf:
         tf.write(wrapped)
         textfile_path = tf.name
 
-    # zoompan: z='if(lte(on,1),1.0,zoom+BG_ZOOM_PER_SEC)'  d=1  s=1080x1920
-    vf = (
-        "split=2[bgsrc][fgsrc];"
+    ticker_file = None
+    has_ticker = theme == "news" and (ticker_text or "").strip() != ""
+    if has_ticker:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8") as tt:
+            tt.write(ticker_text.strip())
+            ticker_file = tt.name
+
+    # Filtre zinciri
+    vf_parts = [
+        "split=2[bgsrc][fgsrc]",
         f"[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,boxblur=20:1,"
-        f"zoompan=z='if(lte(on,1),1.0,zoom+{BG_ZOOM_PER_SEC})':d=1:s=1080x1920[bg];"
-        "[fgsrc]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[fg];"
-        "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,"
-        "drawbox=x=0:y=60:w=iw:h=160:color=black@0.35:t=fill,"
-        f"drawtext=fontfile='{FONT}':textfile='{textfile_path}':"
+        f"zoompan=z='if(lte(on,1),1.0,zoom+{BG_ZOOM_PER_SEC})':d=1:s=1080x1920[bg]",
+        "[fgsrc]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[fg]",
+        "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,",
+        # üst başlık bar + caption
+        "drawbox=x=0:y=60:w=iw:h=160:color=black@0.35:t=fill",
+        f",drawtext=fontfile='{FONT}':textfile='{textfile_path}':"
         "fontcolor=white:fontsize=48:line_spacing=8:borderw=2:bordercolor=black@0.6:"
         "text_shaping=1:x=(w-text_w)/2:y=90"
-    )
+    ]
+
+    if theme == "news":
+        # sol üst kırmızı BREAKING NEWS etiketi
+        vf_parts.append(
+            f",drawtext=fontfile='{FONT}':text='BREAKING NEWS':"
+            "fontcolor=white:fontsize=40:box=1:boxcolor=red@0.85:boxborderw=20:x=40:y=30"
+        )
+
+    if has_ticker and ticker_file:
+        # altta ticker bandı + kayan yazı
+        vf_parts.append(
+            f",drawbox=x=0:y=main_h-{TICKER_H}:w=iw:h={TICKER_H}:color=black@0.55:t=fill"
+            f",drawtext=fontfile='{FONT}':textfile='{ticker_file}':"
+            f"fontcolor=white:fontsize=42:line_spacing=0:borderw=0:"
+            f"x=w-mod(t*{TICKER_SPEED}, (text_w+w)):y=main_h-{TICKER_H}+{(TICKER_H-42)//2}"
+        )
+
+    vf = "".join(vf_parts)
 
     try:
         cmd = [
@@ -62,17 +95,20 @@ def _make_slide(image_path: str, caption: str, duration: float, out_path: str):
     finally:
         try: os.unlink(textfile_path)
         except Exception: pass
+        if ticker_file:
+            try: os.unlink(ticker_file)
+            except Exception: pass
 
-def _concat_slides(slide_paths: List[str], audio_path: str, out_path: str):
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
-        for p in slide_paths:
-            f.write(f"file '{p}'\n")
-        list_path = f.name
-    try:
+def _xfade_and_add_audio(slide_paths: List[str], audio_path: str, out_path: str, seg: float):
+    """
+    Tüm slayt videolarını (sessiz) al, aralarına xfade ile yumuşak geçiş ekle,
+    sonra MP3 sesi bindir.
+    """
+    if len(slide_paths) == 1:
+        # tek slayt: sadece sesi ekle
         cmd = [
             "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0", "-i", list_path,
+            "-i", slide_paths[0],
             "-i", audio_path,
             "-shortest",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
@@ -82,36 +118,10 @@ def _concat_slides(slide_paths: List[str], audio_path: str, out_path: str):
             out_path
         ]
         subprocess.run(cmd, check=True)
-    finally:
-        os.unlink(list_path)
+        return
 
-def _overlay_waveform(in_mp4: str, out_mp4: str):
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", in_mp4,
-        "-filter_complex",
-        "[0:a]showwaves=s=1080x200:mode=cline:rate=30[wf];"
-        "[0:v][wf]overlay=0:main_h-200-40,format=yuv420p",
-        "-map", "0:v", "-map", "0:a",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-        "-c:a", "copy",
-        "-movflags", "+faststart",
-        out_mp4
-    ]
-    subprocess.run(cmd, check=True)
-
-def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str, out_mp4: str):
-    total = _dur_sec(audio_mp3)
-    n = max(1, len(images))
-    seg = max(6, total / n)  # her slayt en az 6 sn
-
-    slide_paths = []
-    for idx, img in enumerate(images):
-        slide_mp4 = f"/tmp/slide_{idx+1}.mp4"
-        cap = captions[idx] if idx < len(captions) else ""
-        _make_slide(img, cap, seg, slide_mp4)
-        slide_paths.append(slide_mp4)
-
-    temp_concat = "/tmp/concat_with_audio.mp4"
-    _concat_slides(slide_paths, audio_mp3, temp_concat)
-    _overlay_waveform(temp_concat, out_mp4)
+    # Çoklu giriş
+    cmd = ["ffmpeg", "-y"]
+    for p in slide_paths:
+        cmd += ["-i", p]
+    cmd += ["-i", audio
