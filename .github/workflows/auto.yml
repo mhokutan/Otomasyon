@@ -26,37 +26,46 @@ jobs:
 
       - name: Run pipeline
         env:
-          # --- KONU / TEMA ---
-          THEME: news                     # news | crypto
+          # --- TEMA / KONU ---
+          THEME: crypto                     # news | crypto
           CRYPTO_COINS: bitcoin,ethereum,solana
 
-          # --- YouTube OAuth (istiyorsan doldurursun; boşsa sadece artifact üretir) ---
+          # --- YouTube OAuth (boşsa yükleme denemez) ---
           YT_CLIENT_ID: ""
           YT_CLIENT_SECRET: ""
           YT_REFRESH_TOKEN: ""
           YT_PRIVACY: "unlisted"
 
           # --- TTS (daha hızlı ve akıcı) ---
-          TTS_ATEMPO: "1.35"              # 1.25–1.40 arası deneyebilirsin
+          TTS_ATEMPO: "1.35"
           TTS_GAP_MS: "30"
+          TTS_BITRATE: "128k"
 
-          # --- Görsel hareket ---
-          BG_ZOOM_PER_SEC: "0.0010"       # arka plan yavaş zoom
-          XFADE_SEC: "0.6"                # slaytlar arası crossfade süresi (sn)
+          # --- Görsel hareket + geçiş ---
+          BG_ZOOM_PER_SEC: "0.0010"
+          XFADE_SEC: "0.6"
 
-          # --- Haber ticker ayarları ---
-          TICKER_SPEED: "140"             # px/sn
-          TICKER_H: "120"                 # ticker yüksekliği (px)
+          # --- Haber ticker (news temasında) ---
+          TICKER_SPEED: "140"
+          TICKER_H: "120"
 
-          # --- (opsiyonel) AI görsel için HF token; boş kalabilir ---
-          HF_TOKEN: ""
+          # --- Haber RSS (news temasında) ---
+          RSS_URL: "https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr"
 
+          # (opsiyonel) HF_TOKEN: ""  # kullanmıyoruz (PIL ile görsel üretiyoruz)
           VIDEO_TITLE_PREFIX: "Günlük Özet:"
-        run: python src/main.py
+        run: |
+          set -euxo pipefail
+          python src/main.py
+          echo "== OUT TREE =="
+          ls -lah out || true
 
       - name: Upload artifact (video + assets)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: output
-          path: out/*
+          path: |
+            out/**
+            **/out/**
+          if-no-files-found: warn
