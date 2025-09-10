@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-script/text generation helpers for the youtube auto workflow.
+Helpers for the YouTube auto workflow (compat layer).
 
-provides:
-- generate_script(mode, language=None, region=None, rss_url=None, coins=None, coin_rows=None, rss_limit=None, **ignored)
-- build_titles(mode, captions, coins_data=None, title_prefix=None)
+Exposed functions:
+- generate_script(mode, language=None, region=None, rss_url=None, coins=None,
+                  coin_rows=None, rss_limit=None, **ignored)
+    -> (script_text, captions_list, coins_data_or_none)
+
+- build_titles(mode, captions=None, coins_data=None, title_prefix=None,
+               coin_rows=None, headlines=None, **ignored)
+    -> If coin_rows or headlines is provided: returns a captions LIST (compat).
+       Else (classic usage with captions): returns (title, description) TUPLE.
+
 - fetch_trends_tr(n=3)
 - make_script_tr(headlines)
 - make_script_crypto(coins_data, language="en")
-- _fetch_headlines_from_rss(url, limit=3)  # compatibility helper expected by older main.py
-
-no external api keys required (coingecko + rss).
+- _fetch_headlines_from_rss(url, limit=3)  # used by some main.py versions
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ from typing import List, Tuple, Dict, Optional, Any
 
 import requests
 
-# optional: nicer rss parsing
+# try to use feedparser if present; otherwise fall back to minimal xml
 try:
     import feedparser  # type: ignore
     _HAS_FEEDPARSER = True
@@ -32,7 +37,7 @@ import xml.etree.ElementTree as ET
 
 
 # -----------------------------
-# utils
+# small utils
 # -----------------------------
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -57,7 +62,7 @@ def _now_ts() -> str:
 
 
 # -----------------------------
-# crypto (coingecko)
+# crypto (CoinGecko, no key)
 # -----------------------------
 
 def fetch_crypto_simple(coin_ids: List[str]) -> Dict[str, Dict[str, float]]:
@@ -69,7 +74,7 @@ def fetch_crypto_simple(coin_ids: List[str]) -> Dict[str, Dict[str, float]]:
         "https://api.coingecko.com/api/v3/simple/price"
         f"?ids={ids}&vs_currencies=usd&include_24hr_change=true"
     )
-    r = requests.get(url, timeout=15)
+    r = requests.get(url, timeout=20)
     r.raise_for_status()
     raw = r.json()
     out: Dict[str, Dict[str, float]] = {}
@@ -129,7 +134,7 @@ def make_script_crypto(coins_data: Dict[str, Dict[str, float]], language: str = 
 
 
 # -----------------------------
-# news / sports via rss
+# news/sports via RSS
 # -----------------------------
 
 def _rss_top_titles(url: str, n: int = 3) -> List[Tuple[str, str]]:
@@ -144,7 +149,7 @@ def _rss_top_titles(url: str, n: int = 3) -> List[Tuple[str, str]]:
         return titles
 
     # minimal xml fallback
-    r = requests.get(url, timeout=15)
+    r = requests.get(url, timeout=20)
     r.raise_for_status()
     root = ET.fromstring(r.content)
 
@@ -173,8 +178,8 @@ def _rss_top_titles(url: str, n: int = 3) -> List[Tuple[str, str]]:
     return titles[:n]
 
 
-# compatibility helper expected by some main.py versions
 def _fetch_headlines_from_rss(url: str, limit: int = 12) -> List[Tuple[str, str]]:
+    """Compatibility helper expected by some main.py versions."""
     return _rss_top_titles(url, n=limit)
 
 
@@ -210,10 +215,7 @@ def make_script_news(headlines: List[Tuple[str, str]], language: str = "en") -> 
     return "\n".join(lines), caps
 
 
-# -----------------------------
-# tr helpers kept for backward compatibility
-# -----------------------------
-
+# legacy Turkish helpers (referenced by older main.py)
 def fetch_trends_tr(n: int = 3) -> List[Tuple[str, str]]:
     url = "https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr"
     return _rss_top_titles(url, n=n)
@@ -223,35 +225,86 @@ def make_script_tr(headlines: List[Tuple[str, str]]) -> Tuple[str, List[str]]:
 
 
 # -----------------------------
-# title / description
+# Titles / Descriptions (compat)
 # -----------------------------
 
-def build_titles(mode: str,
-                 captions: List[str],
-                 coins_data: Optional[Dict[str, Dict[str, float]]] = None,
-                 title_prefix: Optional[str] = None) -> Tuple[str, str]:
-    ts = _now_ts()
-    m = (mode or "").lower()
+def _coins_from_rows(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+    """
+    Some older main.py passes coin_rows=[{id, usd, usd_24h_change}, ...]
+    Convert to our coins_data shape.
+    """
+    out: Dict[str, Dict[str, float]] = {}
+    for r in rows or []:
+        cid = str(r.get("id") or r.get("coin") or "").strip().lower()
+        if not cid:
+            continue
+        try:
+            usd = float(r.get("usd"))
+            chg = float(r.get("usd_24h_change", 0.0))
+        except Exception:
+            continue
+        out[cid] = {"usd": usd, "usd_24h_change": chg}
+    return out
 
+
+def build_titles(mode: str,
+                 captions: Optional[List[str]] = None,
+                 coins_data: Optional[Dict[str, Dict[str, float]]] = None,
+                 title_prefix: Optional[str] = None,
+                 coin_rows: Optional[List[Dict[str, Any]]] = None,
+                 headlines: Optional[List[Tuple[str, str]]] = None,
+                 **ignored: Any):
+    """
+    COMPAT BEHAVIOR:
+
+    - If called with coin_rows or headlines (legacy main.py style):
+        return a LIST of captions (not (title, desc)).
+        * coin_rows -> ["BTC: $..., 24h +...%", ...]
+        * headlines -> ["Title 1", "Title 2", "Title 3"]
+
+    - Else (modern usage with captions):
+        return (title, description).
+    """
+    mode_l = (mode or "").lower()
+
+    # Legacy path 1: coin_rows provided -> return captions list
+    if coin_rows is not None:
+        data = _coins_from_rows(coin_rows)
+        if not data:
+            return []
+        order_env = _env("CRYPTO_COINS", "bitcoin,ethereum,solana")
+        order = [c.strip() for c in (order_env or "").split(",") if c.strip()]
+        ordered = [c for c in order if c in data] or list(data.keys())
+        caps = [f"{cid.upper()}: {_fmt_usd(data[cid]['usd'])} | 24h {_fmt_pct(data[cid]['usd_24h_change'])}"
+                for cid in ordered]
+        return caps
+
+    # Legacy path 2: headlines provided -> return captions list (titles only)
+    if headlines is not None:
+        return [t for (t, _link) in _safe_first(headlines, 5)]
+
+    # Modern path: build (title, description) from provided captions/coins_data
+    ts = _now_ts()
     if not title_prefix:
         title_prefix = {
             "crypto": "Daily Crypto Brief:",
             "sports": "Sports Brief:",
             "news": "Daily Brief:",
-        }.get(m, "Daily Brief:")
+        }.get(mode_l, "Daily Brief:")
 
-    main_part = captions[0] if captions else ("Crypto market update" if m == "crypto" else "Top headlines")
+    main_part = (captions[0] if captions else
+                 ("Crypto market update" if mode_l == "crypto" else "Top headlines"))
     title = f"{title_prefix} {main_part}"
     if len(title) > 95:
         title = title[:92] + "..."
 
-    if m == "crypto" and coins_data:
+    if mode_l == "crypto" and coins_data:
         rows = []
         for cid, d in coins_data.items():
             rows.append(f"{cid.upper()}: {_fmt_usd(d['usd'])} ({_fmt_pct(d['usd_24h_change'])})")
         block = "\n".join(rows)
         desc = textwrap.dedent(f"""\
-            Auto-generated {m} video — {ts}
+            Auto-generated {mode_l} video — {ts}
 
             Prices:
             {block}
@@ -264,9 +317,9 @@ def build_titles(mode: str,
             #crypto #bitcoin #ethereum #solana #ai #shorts
         """).strip()
     else:
-        bullets = "\n".join([f"- {c}" for c in _safe_first(captions, 5)])
+        bullets = "\n".join([f"- {c}" for c in _safe_first(captions or [], 5)])
         desc = textwrap.dedent(f"""\
-            Auto-generated {m or 'news'} video — {ts}
+            Auto-generated {mode_l or 'news'} video — {ts}
 
             Headlines:
             {bullets}
@@ -283,7 +336,7 @@ def build_titles(mode: str,
 
 
 # -----------------------------
-# orchestrator
+# Orchestrator (high-level)
 # -----------------------------
 
 def generate_script(mode: str,
@@ -291,25 +344,26 @@ def generate_script(mode: str,
                     region: Optional[str] = None,
                     rss_url: Optional[str] = None,
                     coins: Optional[List[str]] = None,
-                    coin_rows: Optional[List[Dict[str, Any]]] = None,  # accepted but not required
+                    coin_rows: Optional[List[Dict[str, Any]]] = None,  # accepted for compat
                     rss_limit: Optional[int] = None,
                     **ignored: Any
                     ) -> Tuple[str, List[str], Optional[Dict[str, Dict[str, float]]]]:
     """
-    high-level entry compatible with older main.py callers.
-
-    returns (script_text, captions, coins_data_or_none)
+    Returns (script_text, captions_list, coins_data_or_none)
     """
     language = (language or _env("LANGUAGE", "en")).lower()
-    _ = region or _env("REGION", "US")  # reserved
+    _ = region or _env("REGION", "US")
     mode = (mode or _env("THEME", "crypto")).lower()
 
     if mode == "crypto":
-        # allow callers to pass precomputed coin_rows (ignored here) or list of coins
-        coin_list = coins
-        if not coin_list:
-            coin_list = [c.strip() for c in (_env("CRYPTO_COINS", "bitcoin,ethereum,solana") or "").split(",") if c.strip()]
-        data = fetch_crypto_simple(coin_list)
+        # if coin_rows given, convert; else fetch from API based on coins list
+        if coin_rows:
+            data = _coins_from_rows(coin_rows)
+        else:
+            coin_list = coins
+            if not coin_list:
+                coin_list = [c.strip() for c in (_env("CRYPTO_COINS", "bitcoin,ethereum,solana") or "").split(",") if c.strip()]
+            data = fetch_crypto_simple(coin_list)
         script, caps = make_script_crypto(data, language=language)
         return script, caps, data
 
@@ -324,10 +378,6 @@ def generate_script(mode: str,
     return script, caps, None
 
 
-# -----------------------------
-# cli quick test
-# -----------------------------
-
 if __name__ == "__main__":
     md = os.getenv("THEME", "crypto")
     script, caps, coins_data = generate_script(
@@ -336,7 +386,8 @@ if __name__ == "__main__":
         region=os.getenv("REGION", "US"),
         rss_url=os.getenv("RSS_URL"),
     )
-    title, desc = build_titles(md, caps, coins_data, title_prefix=os.getenv("VIDEO_TITLE_PREFIX"))
+    # Default “modern” usage preview:
+    title, desc = build_titles(md, captions=caps, coins_data=coins_data, title_prefix=os.getenv("VIDEO_TITLE_PREFIX"))
     print("SCRIPT:\n", script)
     print("\nCAPTIONS:", caps)
     print("\nTITLE:", title)
