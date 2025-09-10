@@ -1,58 +1,64 @@
-import os, io, requests, random
-from typing import List
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+import random
 
-HF_MODEL = "black-forest-labs/FLUX.1-schnell"  # hızlı, ücretsiz inference noktası genelde açık olur
-HF_ENDPOINT = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+W, H = 1080, 1920
+FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-def _ai_image_for_title(title: str, token: str) -> bytes | None:
-    try:
-        headers = {"Authorization": f"Bearer {token}"}
-        prompt = (
-            f"High-quality vertical 9:16 illustration for a Turkish news headline:\n"
-            f"'{title}'. Cinematic lighting, photo-realistic, dramatic, trending on artstation."
-        )
-        resp = requests.post(HF_ENDPOINT, headers=headers, json={"inputs": prompt}, timeout=60)
-        if resp.ok and resp.content and resp.headers.get("content-type","").startswith("image/"):
-            return resp.content
-        return None
-    except Exception:
-        return None
+def _bg():
+    # Morumsu degrade + noise
+    img = Image.new("RGB", (W, H), (24, 18, 36))
+    d = ImageDraw.Draw(img)
+    for y in range(H):
+        c = int(24 + 40 * (y / H))
+        d.line([(0, y), (W, y)], fill=(c, 18 + (y % 20), 50 + (y % 30)))
+    px = img.load()
+    for _ in range(15000):
+        x = random.randint(0, W-1); y = random.randint(0, H-1)
+        r,g,b = px[x,y]; dd = random.randint(-10, 10)
+        px[x,y] = (max(0, min(255, r+dd)), max(0, min(255, g+dd)), max(0, min(255, b+dd)))
+    return img.filter(ImageFilter.GaussianBlur(1.5))
 
-def _placeholder_image(title: str, w=1080, h=1920) -> bytes:
-    # Basit degrade + blur + overlay; metni videoda drawtext ile basacağız
-    img = Image.new("RGB", (w, h), (10, 10, 20))
-    draw = ImageDraw.Draw(img)
-    # Degrade
-    for y in range(h):
-        c = int(20 + 80 * (y / h))
-        draw.line([(0, y), (w, y)], fill=(c, c, c))
-    img = img.filter(ImageFilter.GaussianBlur(radius=6))
-    # Hafif vinyet
-    vign = Image.new("L", (w, h), 0)
-    dv = ImageDraw.Draw(vign)
-    dv.ellipse([int(-0.2*w), int(-0.2*h), int(1.2*w), int(1.2*h)], fill=255)
-    vign = vign.filter(ImageFilter.GaussianBlur(200))
-    img.putalpha(vign)
-    bg = Image.new("RGB", (w, h), (12, 12, 16))
-    bg.paste(img, (0,0), img)
-    buf = io.BytesIO()
-    bg.save(buf, format="PNG", optimize=True)
-    return buf.getvalue()
+def _wrap(text, font, max_width):
+    words = text.split()
+    lines, cur = [], []
+    d = ImageDraw.Draw(Image.new("RGB", (1,1)))
+    for w in words:
+        test = " ".join(cur+[w])
+        if d.textlength(test, font=font) <= max_width:
+            cur.append(w)
+        else:
+            lines.append(" ".join(cur)); cur = [w]
+    if cur: lines.append(" ".join(cur))
+    return lines[:3]
 
-def build_images_for_items(titles: List[str], out_dir, prefix="ai") -> List[str]:
-    out_paths = []
-    token = os.getenv("HF_TOKEN")
-
+def build_images_for_items(titles, out_dir, prefix="news"):
+    paths = []
     for i, t in enumerate(titles, 1):
-        data = None
-        if token:
-            data = _ai_image_for_title(t, token)
-        if not data:
-            data = _placeholder_image(t)
+        img = _bg()
+        d = ImageDraw.Draw(img)
+        try:
+            f_big = ImageFont.truetype(FONT, size=58)
+            f_tag = ImageFont.truetype(FONT, size=40)
+            f_water = ImageFont.truetype(FONT, size=160)
+        except:
+            f_big = f_tag = f_water = ImageFont.load_default()
 
-        path = out_dir / f"{prefix}-{i}.png"
-        with open(path, "wb") as f:
-            f.write(data)
-        out_paths.append(str(path))
-    return out_paths
+        # büyük "NEWS" watermark
+        d.text((40, 220), "NEWS", font=f_water, fill=(255,255,255,20))
+
+        # üst bar
+        d.rectangle([0,0,W,140], fill=(0,0,0,120))
+        d.text((40, 45), "DAILY NEWS", font=f_tag, fill=(235,235,240))
+
+        # başlık metin
+        lines = _wrap(t, f_big, max_width=W-160)
+        y = 340
+        for ln in lines:
+            w = d.textlength(ln, font=f_big)
+            d.text(((W-w)//2, y), ln, font=f_big, fill=(255,255,255))
+            y += 80
+
+        p = out_dir / f"{prefix}-{i}.png"
+        img.save(p, "PNG", optimize=True)
+        paths.append(str(p))
+    return paths
