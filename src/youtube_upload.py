@@ -1,67 +1,50 @@
 import os
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2.credentials import Credentials
-from googleapiclient.errors import HttpError
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+def try_upload_youtube(mp4_path: str, title: str, description: str, privacy_status: str = "unlisted"):
+    client_id = os.getenv("YT_CLIENT_ID") or ""
+    client_secret = os.getenv("YT_CLIENT_SECRET") or ""
+    refresh_token = os.getenv("YT_REFRESH_TOKEN") or ""
 
-def have_creds():
-    return all(os.getenv(k) for k in ["YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN"])
+    if not (client_id and client_secret and refresh_token):
+        print("[INFO] YouTube creds not set — skipping upload.")
+        return None
 
-def get_youtube():
     creds = Credentials(
         None,
-        refresh_token=os.getenv("YT_REFRESH_TOKEN"),
+        refresh_token=refresh_token,
         token_uri="https://oauth2.googleapis.com/token",
-        client_id=os.getenv("YT_CLIENT_ID"),
-        client_secret=os.getenv("YT_CLIENT_SECRET"),
-        scopes=SCOPES,
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=["https://www.googleapis.com/auth/youtube.upload"],
     )
-    return build("youtube", "v3", credentials=creds, static_discovery=False)
 
-def try_upload_youtube(video_path, title, description="", privacy_status="unlisted"):
-    if not have_creds():
-        print("YouTube creds missing; skipping upload.")
-        return None
-
-    # privacy_status sağlamlaştır
-    p = (privacy_status or "unlisted").strip().lower()
-    if p not in {"public", "unlisted", "private"}:
-        print(f"Invalid privacy '{privacy_status}', falling back to 'unlisted'")
-        p = "unlisted"
-
-    try:
-        yt = get_youtube()
-        body = {
-            "snippet": {
-                "title": (title or "Video").strip()[:95],
-                "description": description or "",
-                "categoryId": "25",  # News & Politics
-            },
-            "status": {"privacyStatus": p},
+    youtube = build("youtube", "v3", credentials=creds, cache_discovery=False)
+    body = {
+        "snippet": {
+            "title": title,
+            "description": description,
+            "categoryId": "24"  # entertainment
+        },
+        "status": {
+            "privacyStatus": privacy_status
         }
-        media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
-        request = yt.videos().insert(part="snippet,status", body=body, media_body=media)
+        # "notifySubscribers": False  # istersen aç/kapa
+    }
 
-        response = None
-        while response is None:
-            status, response = request.next_chunk()
-            if status:
-                print(f"Upload progress: {int(status.progress() * 100)}%")
+    media = MediaFileUpload(mp4_path, chunksize=1024*1024, resumable=True, mimetype="video/mp4")
+    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
 
-        video_id = response.get("id")
-        if video_id:
-            return f"https://youtu.be/{video_id}"
-        print("[WARN] Upload finished but no video id returned.")
-        return None
+    response = None
+    while True:
+        status, response = request.next_chunk()
+        if response is not None:
+            break
 
-    except HttpError as e:
-        try:
-            print("[ERROR] HttpError:", e.reason, e.error_details)
-        except Exception:
-            print("[ERROR] HttpError:", str(e))
-        return None
-    except Exception as e:
-        print("[ERROR] Unexpected upload error:", e)
-        return None
+    vid_id = response.get("id")
+    if vid_id:
+        url = f"https://www.youtube.com/watch?v={vid_id}"
+        return url
+    return None
