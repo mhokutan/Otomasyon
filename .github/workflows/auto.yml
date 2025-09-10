@@ -40,12 +40,17 @@ jobs:
 
       - name: Preflight – required secrets/vars present?
         env:
-          # secrets + vars (fallback)
-          OPENAI_API_KEY_S: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_KEY_V: ${{ vars.OPENAI_API_KEY }}
-          YT_CLIENT_ID_S: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET_S: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN_S: ${{ secrets.YT_REFRESH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}     # Zaten Secrets'ta olmalı
+          OPENAI_BASE_URL: "https://api.openai.com/v1"
+
+          # EN UCUZ MODELLER — metin ve TTS
+          OPENAI_MODEL_CHAT: "gpt-4o-mini"                  # ucuz genel metin modeli
+          OPENAI_MODEL_TTS:  "gpt-4o-mini-tts"              # ucuz TTS modeli
+
+          # (İsteğe bağlı) tüketimi sınırlamak için
+          OPENAI_MAX_TOKENS: "400"                          # çıkış token üst sınırı
+          OPENAI_TEMPERATURE: "0.7"
+
         run: |
           set -e
           # OPENAI from secret or var
