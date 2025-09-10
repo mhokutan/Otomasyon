@@ -23,14 +23,20 @@ def _post_json(url: str, payload: dict) -> requests.Response:
 def synth_tts_to_mp3(
     text: str,
     out_mp3: str,
-    voice: str = "verse",     # "alloy", "ash", "sage", "verse" vb. — maliyeti etkilemez
+    voice: str = "verse",     # "alloy", "ash", "sage", "verse" vb.
     bitrate: str = "128k",
+    atempo: float | None = None,  # 1.00 normal; <1 yavaş; >1 hızlı
 ):
     """
-    Verilen metni ucuz TTS modeliyle MP3'e çevirir.
+    Verilen metni ucuz TTS modeliyle MP3'e çevirir, sabit bitrate'e normalize eder
+    ve istenirse hızını (tempo) değiştirir.
     """
     _require_key()
-    # 1) OpenAI Audio/Speech ile ikili (binary) ses al
+    if atempo is None:
+        # GitHub Actions env’den kontrol edilebilir
+        atempo = float(os.getenv("OPENAI_TTS_ATEMPO", "1.00"))
+
+    # --- 1) OpenAI Audio/Speech ile mp3 al ---
     url = f"{OPENAI_BASE_URL}/audio/speech"
     payload = {
         "model": OPENAI_TTS_MODEL,
@@ -40,24 +46,46 @@ def synth_tts_to_mp3(
     }
     resp = _post_json(url, payload)
 
-    # 2) MP3'i dosyaya yaz
-    tmp_fd, tmp_mp3 = tempfile.mkstemp(suffix=".mp3")
-    try:
-        os.write(tmp_fd, resp.content)
-        os.close(tmp_fd)
+    # Geçici dosya yolları
+    fd_raw, tmp_mp3_raw = tempfile.mkstemp(suffix=".mp3")
+    os.write(fd_raw, resp.content)
+    os.close(fd_raw)
 
-        # 3) Sabit bitrate’e normalize et (GitHub Actions ortamında uyum için)
-        # (Zaten mp3 gelse de, tek tip dosya üretmek için ffmpeg ile geçelim)
-        cmd = [
+    tmp_norm = tempfile.mktemp(suffix=".mp3")
+    tmp_out  = tempfile.mktemp(suffix=".mp3")
+
+    try:
+        # --- 2) Sabit bitrate’e normalize et ---
+        norm_cmd = [
             "ffmpeg", "-y",
-            "-i", tmp_mp3,
+            "-i", tmp_mp3_raw,
             "-acodec", "libmp3lame",
             "-b:a", bitrate,
-            out_mp3,
+            tmp_norm,
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(norm_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        # --- 3) Tempo ayarı (0.5–2.0 aralığı tek filtredir) ---
+        if abs(atempo - 1.0) < 1e-3:
+            # Hız değiştirmeden direkt çıktıya yaz
+            shutil.move(tmp_norm, out_mp3)
+        else:
+            # atempo zinciri: 0.5–2.0 dışına çıkarsanız bölüp zincirleyin (gerek yok genelde)
+            tempo_cmd = [
+                "ffmpeg", "-y",
+                "-i", tmp_norm,
+                "-filter:a", f"atempo={atempo:.3f}",
+                "-acodec", "libmp3lame",
+                "-b:a", bitrate,
+                tmp_out,
+            ]
+            subprocess.run(tempo_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            shutil.move(tmp_out, out_mp3)
+
     finally:
-        try:
-            os.remove(tmp_mp3)
-        except Exception:
-            pass
+        for p in (tmp_mp3_raw, tmp_norm, tmp_out):
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
