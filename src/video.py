@@ -37,33 +37,38 @@ def _make_slide(image_path: str, caption: str, duration: float, out_path: str,
             tt.write(ticker_text.strip())
             ticker_file = tt.name
 
-    vf_parts = [
+    # ---- FFMPEG FILTERGRAPH ----
+    # Etiketli dallar (split -> [bgsrc] ve [fgsrc]) yeni zincir başlatır -> ';' gerekir
+    base_chains = [
         "split=2[bgsrc][fgsrc]",
         f"[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,boxblur=20:1,"
         f"zoompan=z='if(lte(on,1),1.0,zoom+{BG_ZOOM_PER_SEC})':d=1:s=1080x1920[bg]",
         "[fgsrc]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[fg]",
-        "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,",
+        "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2"
+    ]
+    tail_ops = [
         "drawbox=x=0:y=60:w=iw:h=160:color=black@0.35:t=fill",
-        f",drawtext=fontfile='{FONT}':textfile='{textfile_path}':"
+        f"drawtext=fontfile='{FONT}':textfile='{textfile_path}':"
         "fontcolor=white:fontsize=48:line_spacing=8:borderw=2:bordercolor=black@0.6:"
         "text_shaping=1:x=(w-text_w)/2:y=90"
     ]
-
     if theme == "news":
-        vf_parts.append(
-            f",drawtext=fontfile='{FONT}':text='BREAKING NEWS':"
-            "fontcolor=white:fontsize=40:box=1:boxcolor=red@0.85:boxborderw=20:x=40:y=30"
+        tail_ops.append(
+            "drawtext=fontfile='{font}':text='BREAKING NEWS':"
+            "fontcolor=white:fontsize=40:box=1:boxcolor=red@0.85:boxborderw=20:x=40:y=30".format(font=FONT)
         )
-
     if has_ticker and ticker_file:
-        vf_parts.append(
-            f",drawbox=x=0:y=main_h-{TICKER_H}:w=iw:h={TICKER_H}:color=black@0.55:t=fill"
-            f",drawtext=fontfile='{FONT}':textfile='{ticker_file}':"
+        tail_ops.append(
+            f"drawbox=x=0:y=main_h-{TICKER_H}:w=iw:h={TICKER_H}:color=black@0.55:t=fill"
+        )
+        tail_ops.append(
+            f"drawtext=fontfile='{FONT}':textfile='{ticker_file}':"
             f"fontcolor=white:fontsize=42:line_spacing=0:borderw=0:"
             f"x=w-mod(t*{TICKER_SPEED}, (text_w+w)):y=main_h-{TICKER_H}+{(TICKER_H-42)//2}"
         )
 
-    vf = "".join(vf_parts)
+    # Zincirleri ';' ile birleştir, overlay sonrası efektleri aynı zincirde ',' ile ekle
+    vf = ";".join(base_chains) + "," + ",".join(tail_ops)
 
     try:
         cmd = [
@@ -102,6 +107,7 @@ def _xfade_video(slide_paths: List[str], out_path: str, seg: float):
     for p in slide_paths:
         cmd += ["-i", p]
 
+    # Zincir: [0:v][1:v] -> [v1] ; [v1][2:v] -> [v2] ; ... -> [vout]
     filters = []
     prev = "[0:v]"
     for i in range(1, n):
