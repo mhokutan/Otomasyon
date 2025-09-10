@@ -1,71 +1,88 @@
 name: yt-auto
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '0 6 * * *'   # her gün 06:00 UTC (TR ~09:00)
-  workflow_dispatch: {}
+    # Her gün 12:00 UTC (New York ~08:00/07:00). İstersen değiştir.
+    - cron: "0 12 * * *"
+
+concurrency:
+  group: yt-auto
+  cancel-in-progress: false
 
 jobs:
   build-run:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 30
 
-      - name: Install ffmpeg + fonts
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+          cache: "pip"
 
-      - name: Install deps
-        run: pip install -r requirements.txt
+      - name: Install system deps (ffmpeg & fonts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      - name: Run pipeline
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run generator
         env:
-          # --- TEMA / KONU ---
-          THEME: crypto                     # news | crypto
-          CRYPTO_COINS: bitcoin,ethereum,solana
+          # ======= TEMA / İÇERİK =========
+          THEME: "crypto"                   # "crypto" | "news"
+          CRYPTO_COINS: "bitcoin,ethereum,solana"
+          RSS_URL: "https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr"
+          VIDEO_TITLE_PREFIX: "Günlük Özet:"
 
-          # --- YouTube OAuth (boşsa yükleme denemez) ---
-          YT_CLIENT_ID: ""
-          YT_CLIENT_SECRET: ""
-          YT_REFRESH_TOKEN: ""
-          YT_PRIVACY: "unlisted"
-
-          # --- TTS (daha hızlı ve akıcı) ---
-          TTS_ATEMPO: "1.35"
-          TTS_GAP_MS: "30"
+          # ======= GÖRSEL / SES AYARLARI =======
+          TTS_ATEMPO: "1.35"               # konuşma hızını arttır
+          TTS_GAP_MS: "30"                 # cümle arası bekleme
           TTS_BITRATE: "128k"
-
-          # --- Görsel hareket + geçiş ---
-          BG_ZOOM_PER_SEC: "0.0010"
-          XFADE_SEC: "0.6"
-
-          # --- Haber ticker (news temasında) ---
-          TICKER_SPEED: "140"
+          BG_ZOOM_PER_SEC: "0.0010"        # arka plan yavaş zoom
+          XFADE_SEC: "0.6"                 # slayt geçişi
+          TICKER_SPEED: "140"              # haber şeridi
           TICKER_H: "120"
 
-          # --- Haber RSS (news temasında) ---
-          RSS_URL: "https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr"
+          # ======= (Opsiyonel) AI Görsel için HF =======
+          HF_TOKEN: ${{ secrets.HF_TOKEN }} # yoksa boş kalır ve yerel görseller kullanılır
 
-          # (opsiyonel) HF_TOKEN: ""  # kullanmıyoruz (PIL ile görsel üretiyoruz)
-          VIDEO_TITLE_PREFIX: "Günlük Özet:"
+          # ======= YouTube OAuth =======
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          YT_PRIVACY: "public"             # public | unlisted | private
+
+          # ======= (Opsiyonel) OpenAI =======
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+          # Charset & locale
+          PYTHONIOENCODING: "utf-8"
+          LANG: "tr_TR.UTF-8"
         run: |
           set -euxo pipefail
           python src/main.py
+
+      - name: Show outputs
+        if: always()
+        run: |
           echo "== OUT TREE =="
           ls -lah out || true
 
-      - name: Upload artifact (video + assets)
+      - name: Upload artifact (video + mp3 + görseller)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: output
           path: |
             out/**
-            **/out/**
           if-no-files-found: warn
+          retention-days: 7
