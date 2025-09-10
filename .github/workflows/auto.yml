@@ -82,7 +82,7 @@ jobs:
 
           # Audio/visual tuning
           TTS_VOICE: "alloy"
-          TTS_ATEMPO: "1.60"
+          TTS_ATEMPO: "1.05"
           TTS_GAP_MS: "10"
           TTS_BITRATE: "128k"
           BG_ZOOM_PER_SEC: "0.0018"
@@ -179,7 +179,7 @@ jobs:
 
           # Audio/visual tuning
           TTS_VOICE: "alloy"
-          TTS_ATEMPO: "1.60"
+          TTS_ATEMPO: "1.05"
           TTS_GAP_MS: "10"
           TTS_BITRATE: "128k"
           BG_ZOOM_PER_SEC: "0.0018"
