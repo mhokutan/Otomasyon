@@ -38,21 +38,34 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Preflight – required secrets present?
+      - name: Preflight – required secrets/vars present?
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          # secrets + vars (fallback)
+          OPENAI_API_KEY_S: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY_V: ${{ vars.OPENAI_API_KEY }}
+          YT_CLIENT_ID_S: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET_S: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN_S: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
           set -e
-          for k in OPENAI_API_KEY YT_CLIENT_ID YT_CLIENT_SECRET YT_REFRESH_TOKEN; do
+          # OPENAI from secret or var
+          if [ -z "${OPENAI_API_KEY_S}${OPENAI_API_KEY_V}" ]; then
+            echo "::error::Missing OPENAI_API_KEY (neither 'Secrets' nor 'Variables' set)"
+            exit 1
+          fi
+          # YouTube must be in secrets
+          for k in YT_CLIENT_ID_S YT_CLIENT_SECRET_S YT_REFRESH_TOKEN_S; do
             if [ -z "${!k}" ]; then
-              echo "::error::Missing required secret: $k"
+              echo "::error::Missing required YouTube secret: ${k%_S}"
               exit 1
             fi
           done
-          echo "All required secrets are present ✅"
+          if [ -n "${OPENAI_API_KEY_S}" ]; then
+            echo "OPENAI_API_KEY source: Secrets ✅"
+          else
+            echo "OPENAI_API_KEY source: Variables ⚠️ (move to Secrets when mümkün)"
+          fi
+          echo "All required credentials are present ✅"
 
       - name: Run generator (CRYPTO morning EN)
         env:
@@ -74,16 +87,16 @@ jobs:
           FPS: "60"
 
           # Optional AI images (Hugging Face)
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN || vars.HF_TOKEN }}
 
-          # YouTube OAuth
+          # YouTube OAuth (secrets)
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
 
-          # OpenAI TTS
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # OpenAI TTS (secret or var fallback)
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
 
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
@@ -125,21 +138,31 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Preflight – required secrets present?
+      - name: Preflight – required secrets/vars present?
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          OPENAI_API_KEY_S: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY_V: ${{ vars.OPENAI_API_KEY }}
+          YT_CLIENT_ID_S: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET_S: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN_S: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
           set -e
-          for k in OPENAI_API_KEY YT_CLIENT_ID YT_CLIENT_SECRET YT_REFRESH_TOKEN; do
+          if [ -z "${OPENAI_API_KEY_S}${OPENAI_API_KEY_V}" ]; then
+            echo "::error::Missing OPENAI_API_KEY (neither 'Secrets' nor 'Variables' set)"
+            exit 1
+          fi
+          for k in YT_CLIENT_ID_S YT_CLIENT_SECRET_S YT_REFRESH_TOKEN_S; do
             if [ -z "${!k}" ]; then
-              echo "::error::Missing required secret: $k"
+              echo "::error::Missing required YouTube secret: ${k%_S}"
               exit 1
             fi
           done
-          echo "All required secrets are present ✅"
+          if [ -n "${OPENAI_API_KEY_S}" ]; then
+            echo "OPENAI_API_KEY source: Secrets ✅"
+          else
+            echo "OPENAI_API_KEY source: Variables ⚠️ (move to Secrets when mümkün)"
+          fi
+          echo "All required credentials are present ✅"
 
       - name: Run generator (SPORTS evening EN)
         env:
@@ -160,17 +183,14 @@ jobs:
           TICKER_H: "120"
           FPS: "60"
 
-          # Optional AI images (Hugging Face)
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN || vars.HF_TOKEN }}
 
-          # YouTube OAuth
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
 
-          # OpenAI TTS
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
 
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
