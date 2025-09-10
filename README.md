@@ -1,30 +1,28 @@
-# YouTube Shorts Otomasyon (Ücretsiz, OpenAI yok)
+# Otomatik YouTube Shorts – Haber/Kripto
 
-- Orkestrasyon: **GitHub Actions** (ücretsiz)
-- Metin: kural tabanlı
-- TTS: **gTTS** (ücretsiz)
-- Render: **FFmpeg** (1080×1920)
-- YouTube yükleme: OAuth ile (opsiyonel)
+Tam otomatik: metin → TTS → dikey video (9:16) → (opsiyonel) YouTube’a yükleme.
 
-## Hızlı Kurulum
-1. Bu dosyaları repo’ya ekle.
-2. GitHub → **Settings → Secrets and variables → Actions**:
-   - (Otomatik upload için) `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN`
-   - (Opsiyonel) `YT_PRIVACY` = `unlisted` / `public` / `private`  
-     > Boş/hatalıysa otomatik **`unlisted`** kullanılır.
-   - (Opsiyonel) `VIDEO_TITLE_PREFIX` = `Günün Özeti:`
-3. **Actions → yt-auto → Run workflow**.  
-   - Çıkışlar **Artifacts → output**’ta.
-   - Secret’lar varsa otomatik YouTube’a yükler.
+## Kurulum
+1. Bu repo’yu oluştur.
+2. Actions sekmesinde workflow izinlerini aç.
+3. Gerekirse `.github/workflows/auto.yml` içinde env değişkenlerini düzenle.
 
-## YouTube OAuth (kısaca)
-- Google Cloud Console → YouTube Data API v3 **Enable**
-- OAuth consent screen: **External**, **Test users**’a Gmail’ini ekle.
-- **OAuth client (Web)** oluştur, redirect URI:  
-  `https://developers.google.com/oauthplayground`
-- **OAuth Playground** (Use your own credentials) ile `youtube.upload` scope’tan **refresh_token** al → Secrets’a koy.
+## Çalıştırma
+- Elle: **Actions → yt-auto → Run workflow**
+- Otomatik: cron (`0 6 * * *`) her gün TR 09:00 civarı.
 
-## Özelleştirme
-- RSS kaynağı: `src/scriptgen.py → RSS_URL_TR`
-- Senaryo kalıbı: `make_script_tr()` fonksiyonu
-- Video üretimi: `src/video.py` (FFmpeg komutunu zenginleştirebilirsin)
+## Temalar
+- `THEME=news` → Google News TR RSS (üstte “BREAKING NEWS” etiketi + altta ticker)
+- `THEME=crypto` → CoinGecko’dan BTC/ETH/SOL vb. fiyat + sparkline
+
+## YouTube Yükleme (opsiyonel)
+Repo ayarlarında env set et:
+- `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN`
+- `YT_PRIVACY`: `public|unlisted|private`
+
+Boş bırakılırsa video sadece **artifact** olarak kaydolur.
+
+## Hız ve Görsel
+- `TTS_ATEMPO` ile konuşma hızını artır (örn. `1.35`)
+- `BG_ZOOM_PER_SEC` ile arka plan hareketini ayarla (örn. `0.0010`)
+- `XFADE_SEC` slayt geçiş yumuşaklığı
