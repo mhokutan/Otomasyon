@@ -3,8 +3,6 @@ from typing import List
 from pydub import AudioSegment
 
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-
-# Env ayarları
 BG_ZOOM_PER_SEC = float(os.getenv("BG_ZOOM_PER_SEC", "0.0006"))
 XFADE_SEC       = float(os.getenv("XFADE_SEC", "0.6"))
 TICKER_SPEED    = float(os.getenv("TICKER_SPEED", "120"))
@@ -12,7 +10,7 @@ TICKER_H        = int(os.getenv("TICKER_H", "120"))
 
 def _dur_sec(mp3_path):
     audio = AudioSegment.from_file(mp3_path)
-    return max(8, round(len(audio) / 1000))  # en az 8 sn
+    return max(8, round(len(audio) / 1000))
 
 def _wrap_lines(text: str, max_len: int = 48) -> str:
     words = text.split()
@@ -21,20 +19,12 @@ def _wrap_lines(text: str, max_len: int = 48) -> str:
         if sum(len(x) for x in line) + len(line) + len(w) <= max_len:
             line.append(w)
         else:
-            lines.append(" ".join(line))
-            line = [w]
-    if line:
-        lines.append(" ".join(line))
-    return "\n".join(lines[:3])  # en fazla 3 satır
+            lines.append(" ".join(line)); line = [w]
+    if line: lines.append(" ".join(line))
+    return "\n".join(lines[:3])
 
 def _make_slide(image_path: str, caption: str, duration: float, out_path: str,
                 theme: str = "news", ticker_text: str | None = None):
-    """
-    Dinamik arka plan: blur + yavaş zoom (zoompan).
-    Ön plan: 9:16 kırpılmış net görsel.
-    Üstte yarı saydam başlık bar + (news ise) BREAKING NEWS etiketi.
-    Altta (news ise) kayan ticker.
-    """
     wrapped = _wrap_lines(caption or "", max_len=48)
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8") as tf:
         tf.write(wrapped)
@@ -96,13 +86,8 @@ def _make_slide(image_path: str, caption: str, duration: float, out_path: str,
             except Exception: pass
 
 def _xfade_video(slide_paths: List[str], out_path: str, seg: float):
-    """
-    Tüm slaytları xfade ile tek videoda birleştirir (sessiz).
-    offset_k = k*(seg - XFADE_SEC) formülü ile zincirleme xfade.
-    """
     n = len(slide_paths)
     if n == 1:
-        # Tek slayt ise doğrudan kopyala (video-only)
         cmd = [
             "ffmpeg", "-y", "-i", slide_paths[0],
             "-an",
@@ -171,9 +156,8 @@ def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str,
                          theme: str = "news", ticker_text: str | None = None):
     total = _dur_sec(audio_mp3)
     n = max(1, len(images))
-    seg = max(6, total / n)  # her slayt en az 6 sn
+    seg = max(6, total / n)
 
-    # 1) Slaytları üret
     slide_paths = []
     for idx, img in enumerate(images):
         slide_mp4 = f"/tmp/slide_{idx+1}.mp4"
@@ -181,14 +165,11 @@ def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str,
         _make_slide(img, cap, seg, slide_mp4, theme=theme, ticker_text=ticker_text)
         slide_paths.append(slide_mp4)
 
-    # 2) XFADE ile birleştir (sessiz video)
     temp_xfade = "/tmp/xfaded.mp4"
     _xfade_video(slide_paths, temp_xfade, seg)
 
-    # 3) Sesi ekle (mux)
     temp_with_audio = "/tmp/with_audio.mp4"
     _mux_audio(temp_xfade, audio_mp3, temp_with_audio)
 
-    # 4) Waveform’u bindir (ticker varsa çakışmayacak yükseklikte)
     has_ticker = (theme == "news") and (ticker_text or "").strip() != ""
     _overlay_waveform(temp_with_audio, out_mp4, has_ticker)
