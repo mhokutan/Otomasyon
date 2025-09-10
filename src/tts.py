@@ -1,52 +1,42 @@
-import os, io, re, tempfile, subprocess
-from gtts import gTTS
-from pydub import AudioSegment
+import os, subprocess, tempfile, json, requests
 
-def split_for_tts(text, max_chars=200):
-    parts = re.split(r'(?<=[.!?])\s+', text.strip())
-    chunks = []
-    for p in parts:
-        p = p.strip()
-        if not p: continue
-        if len(p) <= max_chars:
-            chunks.append(p)
-        else:
-            s = 0
-            while s < len(p):
-                chunks.append(p[s:s+max_chars])
-                s += max_chars
-    return chunks
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
-def _ffmpeg_atempo(in_path: str, out_path: str, atempos: str, bitrate: str):
-    filters = ",".join([f"atempo={v.strip()}" for v in atempos.split(",") if v.strip()])
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", in_path,
-        "-filter:a", filters,
-        "-ar", "44100", "-ac", "2", "-b:a", bitrate,
-        out_path
-    ]
-    subprocess.run(cmd, check=True)
+def _openai_tts(text: str, voice: str, out_mp3: str):
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY missing")
+    url = "https://api.openai.com/v1/audio/speech"
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": "tts-1",
+        "voice": voice or "alloy",
+        "input": text,
+        "format": "mp3"
+    }
+    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
+    if r.status_code != 200:
+        raise RuntimeError(f"TTS error {r.status_code}: {r.text[:200]}")
+    with open(out_mp3, "wb") as f:
+        f.write(r.content)
 
-def script_to_mp3(text, out_path, lang="tr"):
-    gap_ms = int(os.getenv("TTS_GAP_MS", "40"))
-    atempos = os.getenv("TTS_ATEMPO", "1.25")
-    bitrate = os.getenv("TTS_BITRATE", "128k")
-
-    chunks = split_for_tts(text)
-    final = AudioSegment.silent(duration=150)
-    for ch in chunks:
-        tts = gTTS(ch, lang=lang)
-        buf = io.BytesIO()
-        tts.write_to_fp(buf)
-        buf.seek(0)
-        seg = AudioSegment.from_file(buf, format="mp3")
-        final += seg + AudioSegment.silent(duration=gap_ms)
-
-    final = final.set_frame_rate(44100).set_channels(2)
-
+def synth_tts_to_mp3(text: str, out_mp3: str, voice="alloy", atempo=1.4, gap_ms=10, bitrate="128k"):
+    # Basic gap: replace "\n\n" with short pause textually – OpenAI handles punctuation well.
+    txt = " ".join([t.strip() for t in text.splitlines() if t.strip()])
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-        tmp_path = tmp.name
-    final.export(tmp_path, format="mp3", bitrate=bitrate)
-    _ffmpeg_atempo(tmp_path, out_path, atempos, bitrate)
-    return out_path
+        tmp_name = tmp.name
+    _openai_tts(txt, voice, tmp_name)
+
+    # Speed/pacing by ffmpeg atempo and re-encode target bitrate
+    # (if atempo too high, quality may degrade)
+    atempo = max(0.5, min(2.0, float(atempo)))
+    subprocess.run([
+        "ffmpeg","-y",
+        "-i", tmp_name,
+        "-af", f"atempo={atempo},loudnorm=I=-18:TP=-1.5:LRA=11",
+        "-b:a", bitrate, "-ar", "44100", "-ac", "2",
+        out_mp3
+    ], check=True)
+    try:
+        os.unlink(tmp_name)
+    except Exception:
+        pass
