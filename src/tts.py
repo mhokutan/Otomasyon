@@ -1,42 +1,63 @@
-import os, subprocess, tempfile, json, requests
+# src/tts.py
+import os, json, requests, tempfile, subprocess, shutil
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_TTS_MODEL = os.getenv("OPENAI_MODEL_TTS", "gpt-4o-mini-tts")
 
-def _openai_tts(text: str, voice: str, out_mp3: str):
+def _require_key():
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY missing")
-    url = "https://api.openai.com/v1/audio/speech"
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": "tts-1",
-        "voice": voice or "alloy",
-        "input": text,
-        "format": "mp3"
+
+def _post_json(url: str, payload: dict) -> requests.Response:
+    _require_key()
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
     }
-    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
-    if r.status_code != 200:
-        raise RuntimeError(f"TTS error {r.status_code}: {r.text[:200]}")
-    with open(out_mp3, "wb") as f:
-        f.write(r.content)
+    resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"TTS HTTP {resp.status_code}: {resp.text}")
+    return resp
 
-def synth_tts_to_mp3(text: str, out_mp3: str, voice="alloy", atempo=1.4, gap_ms=10, bitrate="128k"):
-    # Basic gap: replace "\n\n" with short pause textually – OpenAI handles punctuation well.
-    txt = " ".join([t.strip() for t in text.splitlines() if t.strip()])
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-        tmp_name = tmp.name
-    _openai_tts(txt, voice, tmp_name)
+def synth_tts_to_mp3(
+    text: str,
+    out_mp3: str,
+    voice: str = "verse",     # "alloy", "ash", "sage", "verse" vb. — maliyeti etkilemez
+    bitrate: str = "128k",
+):
+    """
+    Verilen metni ucuz TTS modeliyle MP3'e çevirir.
+    """
+    _require_key()
+    # 1) OpenAI Audio/Speech ile ikili (binary) ses al
+    url = f"{OPENAI_BASE_URL}/audio/speech"
+    payload = {
+        "model": OPENAI_TTS_MODEL,
+        "voice": voice,
+        "input": text,
+        "format": "mp3",
+    }
+    resp = _post_json(url, payload)
 
-    # Speed/pacing by ffmpeg atempo and re-encode target bitrate
-    # (if atempo too high, quality may degrade)
-    atempo = max(0.5, min(2.0, float(atempo)))
-    subprocess.run([
-        "ffmpeg","-y",
-        "-i", tmp_name,
-        "-af", f"atempo={atempo},loudnorm=I=-18:TP=-1.5:LRA=11",
-        "-b:a", bitrate, "-ar", "44100", "-ac", "2",
-        out_mp3
-    ], check=True)
+    # 2) MP3'i dosyaya yaz
+    tmp_fd, tmp_mp3 = tempfile.mkstemp(suffix=".mp3")
     try:
-        os.unlink(tmp_name)
-    except Exception:
-        pass
+        os.write(tmp_fd, resp.content)
+        os.close(tmp_fd)
+
+        # 3) Sabit bitrate’e normalize et (GitHub Actions ortamında uyum için)
+        # (Zaten mp3 gelse de, tek tip dosya üretmek için ffmpeg ile geçelim)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", tmp_mp3,
+            "-acodec", "libmp3lame",
+            "-b:a", bitrate,
+            out_mp3,
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    finally:
+        try:
+            os.remove(tmp_mp3)
+        except Exception:
+            pass
