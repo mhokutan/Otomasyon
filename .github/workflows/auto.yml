@@ -3,15 +3,18 @@ name: yt-auto
 on:
   workflow_dispatch:
   schedule:
-    # Her gün 12:00 UTC (New York ~08:00/07:00). İstersen değiştir.
-    - cron: "0 12 * * *"
+    # New York 07:00 (EDT ~ UTC 11:00)
+    - cron: "0 11 * * *"
+    # New York 19:00 (EDT ~ UTC 23:00)
+    - cron: "0 23 * * *"
 
 concurrency:
   group: yt-auto
   cancel-in-progress: false
 
 jobs:
-  build-run:
+  morning-crypto:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 11 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -35,54 +38,131 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run generator
+      - name: Run generator (CRYPTO - morning, EN)
         env:
-          # ======= TEMA / İÇERİK =========
-          THEME: "crypto"                   # "crypto" | "news"
+          # ===== CONTENT =====
+          THEME: "crypto"
           CRYPTO_COINS: "bitcoin,ethereum,solana"
-          RSS_URL: "https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr"
-          VIDEO_TITLE_PREFIX: "Günlük Özet:"
+          VIDEO_TITLE_PREFIX: "Daily Crypto Brief:"
+          LANGUAGE: "en"
+          REGION: "US"
 
-          # ======= GÖRSEL / SES AYARLARI =======
-          TTS_ATEMPO: "1.35"               # konuşma hızını arttır
-          TTS_GAP_MS: "30"                 # cümle arası bekleme
+          # ===== AUDIO / VISUAL =====
+          TTS_ATEMPO: "1.35"
+          TTS_GAP_MS: "30"
           TTS_BITRATE: "128k"
-          BG_ZOOM_PER_SEC: "0.0010"        # arka plan yavaş zoom
-          XFADE_SEC: "0.6"                 # slayt geçişi
-          TICKER_SPEED: "140"              # haber şeridi
+          BG_ZOOM_PER_SEC: "0.0010"
+          XFADE_SEC: "0.6"
+          TICKER_SPEED: "140"
           TICKER_H: "120"
 
-          # ======= (Opsiyonel) AI Görsel için HF =======
-          HF_TOKEN: ${{ secrets.HF_TOKEN }} # yoksa boş kalır ve yerel görseller kullanılır
+          # ===== (Optional) AI images via HF =====
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
-          # ======= YouTube OAuth =======
+          # ===== YouTube OAuth =====
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-          YT_PRIVACY: "public"             # public | unlisted | private
+          YT_PRIVACY: "public"
 
-          # ======= (Opsiyonel) OpenAI =======
+          # ===== (Optional) OpenAI =====
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
-          # Charset & locale
+          # Locale
           PYTHONIOENCODING: "utf-8"
-          LANG: "tr_TR.UTF-8"
+          LANG: "en_US.UTF-8"
         run: |
           set -euxo pipefail
           python src/main.py
 
-      - name: Show outputs
+      - name: Show outputs (morning)
         if: always()
         run: |
-          echo "== OUT TREE =="
+          echo "== OUT TREE (MORNING) =="
           ls -lah out || true
 
-      - name: Upload artifact (video + mp3 + görseller)
+      - name: Upload artifact (morning)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: output
-          path: |
-            out/**
+          name: output-morning
+          path: out/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  evening-sports:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 23 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install system deps (ffmpeg & fonts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run generator (SPORTS - evening, EN)
+        env:
+          # ===== CONTENT =====
+          THEME: "news"   # sports = news över RSS
+          RSS_URL: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en&q=sports"
+          VIDEO_TITLE_PREFIX: "Sports Brief:"
+          LANGUAGE: "en"
+          REGION: "US"
+
+          # ===== AUDIO / VISUAL =====
+          TTS_ATEMPO: "1.35"
+          TTS_GAP_MS: "30"
+          TTS_BITRATE: "128k"
+          BG_ZOOM_PER_SEC: "0.0010"
+          XFADE_SEC: "0.6"
+          TICKER_SPEED: "150"
+          TICKER_H: "120"
+
+          # ===== (Optional) AI images via HF =====
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+          # ===== YouTube OAuth =====
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          YT_PRIVACY: "public"
+
+          # ===== (Optional) OpenAI =====
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+          # Locale
+          PYTHONIOENCODING: "utf-8"
+          LANG: "en_US.UTF-8"
+        run: |
+          set -euxo pipefail
+          python src/main.py
+
+      - name: Show outputs (evening)
+        if: always()
+        run: |
+          echo "== OUT TREE (EVENING) =="
+          ls -lah out || true
+
+      - name: Upload artifact (evening)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-evening
+          path: out/**
           if-no-files-found: warn
           retention-days: 7
