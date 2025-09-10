@@ -3,9 +3,9 @@ name: yt-auto
 on:
   workflow_dispatch:
   schedule:
-    # New York 07:00 (EDT ~ UTC 11:00)
+    # New York 07:00 (EDT ≈ UTC 11:00)
     - cron: "0 11 * * *"
-    # New York 19:00 (EDT ~ UTC 23:00)
+    # New York 19:00 (EDT ≈ UTC 23:00)
     - cron: "0 23 * * *"
 
 concurrency:
@@ -17,7 +17,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 11 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,48 +37,42 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run generator (CRYPTO - morning, EN)
+      - name: Run generator (CRYPTO morning EN)
         env:
-          # ===== CONTENT =====
           THEME: "crypto"
           CRYPTO_COINS: "bitcoin,ethereum,solana"
           VIDEO_TITLE_PREFIX: "Daily Crypto Brief:"
           LANGUAGE: "en"
           REGION: "US"
 
-          # ===== AUDIO / VISUAL =====
-          TTS_ATEMPO: "1.35"
-          TTS_GAP_MS: "30"
+          # Audio/visual tuning
+          TTS_VOICE: "alloy"
+          TTS_ATEMPO: "1.60"
+          TTS_GAP_MS: "10"
           TTS_BITRATE: "128k"
-          BG_ZOOM_PER_SEC: "0.0010"
-          XFADE_SEC: "0.6"
-          TICKER_SPEED: "140"
+          BG_ZOOM_PER_SEC: "0.0018"
+          XFADE_SEC: "1.0"
+          TICKER_SPEED: "170"
           TICKER_H: "120"
+          FPS: "60"
 
-          # ===== (Optional) AI images via HF =====
+          # Optional AI images (Hugging Face)
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
-          # ===== YouTube OAuth =====
+          # YouTube OAuth
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
 
-          # ===== (Optional) OpenAI =====
+          # OpenAI TTS
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
-          # Locale
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
         run: |
           set -euxo pipefail
           python src/main.py
-
-      - name: Show outputs (morning)
-        if: always()
-        run: |
-          echo "== OUT TREE (MORNING) =="
-          ls -lah out || true
 
       - name: Upload artifact (morning)
         if: always()
@@ -94,7 +87,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 23 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -115,48 +107,42 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run generator (SPORTS - evening, EN)
+      - name: Run generator (SPORTS evening EN)
         env:
-          # ===== CONTENT =====
-          THEME: "news"   # sports = news över RSS
+          THEME: "news"  # sports via RSS
           RSS_URL: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en&q=sports"
           VIDEO_TITLE_PREFIX: "Sports Brief:"
           LANGUAGE: "en"
           REGION: "US"
 
-          # ===== AUDIO / VISUAL =====
-          TTS_ATEMPO: "1.35"
-          TTS_GAP_MS: "30"
+          # Audio/visual tuning
+          TTS_VOICE: "alloy"
+          TTS_ATEMPO: "1.60"
+          TTS_GAP_MS: "10"
           TTS_BITRATE: "128k"
-          BG_ZOOM_PER_SEC: "0.0010"
-          XFADE_SEC: "0.6"
-          TICKER_SPEED: "150"
+          BG_ZOOM_PER_SEC: "0.0018"
+          XFADE_SEC: "1.0"
+          TICKER_SPEED: "180"
           TICKER_H: "120"
+          FPS: "60"
 
-          # ===== (Optional) AI images via HF =====
+          # Optional AI images (Hugging Face)
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
-          # ===== YouTube OAuth =====
+          # YouTube OAuth
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
 
-          # ===== (Optional) OpenAI =====
+          # OpenAI TTS
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
-          # Locale
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
         run: |
           set -euxo pipefail
           python src/main.py
-
-      - name: Show outputs (evening)
-        if: always()
-        run: |
-          echo "== OUT TREE (EVENING) =="
-          ls -lah out || true
 
       - name: Upload artifact (evening)
         if: always()
