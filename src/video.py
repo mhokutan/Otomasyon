@@ -1,250 +1,201 @@
-import subprocess, tempfile, os
-from typing import List
-from pydub import AudioSegment
+# src/video.py
+import os, subprocess, tempfile, textwrap, datetime, shutil
 
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-BG_ZOOM_PER_SEC = float(os.getenv("BG_ZOOM_PER_SEC", "0.0006"))
-XFADE_SEC       = float(os.getenv("XFADE_SEC", "0.6"))
-TICKER_SPEED    = float(os.getenv("TICKER_SPEED", "120"))
-TICKER_H        = int(os.getenv("TICKER_H", "120"))
-FPS             = int(os.getenv("FPS", "30"))
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-# SFX / BGM
-SFX_ENABLE  = os.getenv("SFX_ENABLE", "1") == "1"
-BGM_FILE    = os.getenv("BGM_FILE", "assets/sfx/bgm.mp3").strip()
-SFX_WHOOSH  = os.getenv("SFX_WHOOSH", "assets/sfx/whoosh.wav").strip()
-BGM_VOL     = float(os.getenv("BGM_VOL", "0.15"))
-SFX_VOL     = float(os.getenv("SFX_VOL", "0.9"))
-DUCK        = os.getenv("DUCK", "1") == "1"
+def _write_tmp_textfile(txt: str) -> str:
+    # drawtext=textfile= ile kullanmak için geçici dosya
+    fd, path = tempfile.mkstemp(suffix=".txt")
+    os.write(fd, txt.encode("utf-8"))
+    os.close(fd)
+    return path
 
-def _dur_sec(mp3_path):
-    audio = AudioSegment.from_file(mp3_path)
-    return max(8, round(len(audio) / 1000))
+def _ticker_text_block(t: str, repeat: int = 20) -> str:
+    t = t.strip().replace("\n", " ").replace("\r", " ")
+    if not t:
+        t = "Stay informed • Subscribe • "
+    return ("  •  ".join([t] * repeat)) + "     "
 
-def _wrap_lines(text: str, max_len: int = 48) -> str:
-    words = text.split()
-    lines, line = [], []
-    for w in words:
-        cur = " ".join(line + [w])
-        if len(cur) <= max_len:
-            line.append(w)
-        else:
-            if line: lines.append(" ".join(line))
-            line = [w]
-    if line: lines.append(" ".join(line))
-    return "\n".join(lines[:3])
+def _make_slide(
+    img_path: str,
+    caption: str,
+    seg_dur: float,
+    out_mp4: str,
+    theme: str = "news",
+    ticker_text: str | None = None,
+    fps: int = 60,
+    zoom_per_sec: float = 0.0018,
+    ticker_h: int = 120,
+    xfade_sec: float = 1.0,
+):
+    """
+    Tek kareden (image) dikey 1080x1920 MP4 segment üretir.
+    - Arka plan blur + hafif zoom
+    - Üst “etiket” (BREAKING NEWS / CRYPTO BRIEF / SPORTS BRIEF)
+    - Başlık (caption) ortada
+    - Alt kayan yazı (opsiyonel)
+    """
 
-def _make_slide(image_path: str, caption: str, duration: float, out_path: str,
-                theme: str = "news", ticker_text: str | None = None):
-    wrapped = _wrap_lines(caption or "", max_len=48)
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8") as tf:
-        tf.write(wrapped)
-        cap_file = tf.name
+    # Tema etiketi
+    theme_label = {
+        "news": "BREAKING NEWS",
+        "crypto": "CRYPTO BRIEF",
+        "sports": "SPORTS BRIEF",
+    }.get(theme, "DAILY BRIEF")
 
+    cap_file = _write_tmp_textfile(caption)
     ticker_file = None
-    has_ticker = (theme == "news") and (ticker_text or "").strip() != ""
-    if has_ticker:
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8") as tt:
-            tt.write(ticker_text.strip())
-            ticker_file = tt.name
+    if ticker_text:
+        ticker_file = _write_tmp_textfile(_ticker_text_block(ticker_text, repeat=24))
 
-    # Use filter_complex with proper labeling
+    # drawtext/drawbox'ta 'h' ve 'w' kullanılır; overlay'de main_w/main_h.
+    # Kayan yazı x= ifadesindeki virgülü kaçırıyoruz: \,
     parts = []
-    parts.append(f"[0:v]split=2[bgsrc][fgsrc]")
-    parts.append(
-        f"[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,"
-        f"boxblur=20:1,"
-        f"zoompan=z='if(lte(on,1),1.0,zoom+{BG_ZOOM_PER_SEC})':d=1:s=1080x1920[bg]"
-    )
-    parts.append(
-        f"[fgsrc]scale=1080:1920:force_original_aspect_ratio=increase,"
-        f"crop=1080:1920[fg]"
-    )
-    parts.append(f"[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[base]")
 
-    # draw layers on [base]
-    draw_ops = [
-        "drawbox=x=0:y=60:w=iw:h=160:color=black@0.35:t=fill",
-        f"drawtext=fontfile='{FONT}':textfile='{cap_file}':"
-        "fontcolor=white:fontsize=48:line_spacing=8:borderw=2:bordercolor=black@0.6:"
-        "text_shaping=1:x=(w-text_w)/2:y=90"
+    # 1) split/scale/blur/zoom/crop ve overlay
+    parts.append(
+        "[0:v]split=2[bgsrc][fgsrc];"
+        "[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,"
+        f"boxblur=20:1,zoompan=z='if(lte(on,1),1.0,zoom+{zoom_per_sec})':d=1:s=1080x1920[bg];"
+        "[fgsrc]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[fg];"
+        "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[base]"
+    )
+
+    # 2) Üst etiket + başlık kutusu
+    parts.append(
+        "[base]"
+        f"drawtext=fontfile='{FONT_BOLD}':text='{theme_label}':fontcolor=white:fontsize=40:"
+        "box=1:boxcolor=red@0.85:boxborderw=20:x=40:y=30,"
+        "drawbox=x=0:y=60:w=iw:h=160:color=black@0.35:t=fill,"
+        f"drawtext=fontfile='{FONT_BOLD}':textfile='{cap_file}':fontcolor=white:fontsize=48:"
+        "line_spacing=8:borderw=2:bordercolor=black@0.6:text_shaping=1:"
+        "x=(w-text_w)/2:y=90[base2]"
+    )
+
+    # 3) Alt ticker (opsiyonel)
+    if ticker_file:
+        parts.append(
+            "[base2]"
+            f"drawbox=x=0:y=h-{ticker_h}:w=iw:h={ticker_h}:color=black@0.55:t=fill,"
+            f"drawtext=fontfile='{FONT_BOLD}':textfile='{ticker_file}':fontcolor=white:fontsize=42:"
+            "line_spacing=0:borderw=0:"
+            # virgülü kaçır: \,
+            f"x=w-mod(t*180.0\\,(text_w+w)):y=h-{ticker_h}+39[vout]"
+        )
+        last_label = "[vout]"
+    else:
+        # Ticker yoksa doğrudan vout'a bağla
+        parts.append("[base2]null[vout]")
+        last_label = "[vout]"
+
+    filter_complex = ";".join(parts)
+
+    # ffmpeg komutu
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-loop", "1",
+        "-t", f"{seg_dur:.2f}",
+        "-i", img_path,
+        "-filter_complex", filter_complex,
+        "-map", last_label,
+        "-r", str(fps),
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "22",
+        "-pix_fmt", "yuv420p",
+        "-an",
+        "-movflags", "+faststart",
+        out_mp4,
     ]
-    if theme == "news":
-        draw_ops.insert(0,
-            f"drawtext=fontfile='{FONT}':text='BREAKING NEWS':"
-            "fontcolor=white:fontsize=40:box=1:boxcolor=red@0.85:boxborderw=20:x=40:y=30"
-        )
-    if has_ticker and ticker_file:
-        draw_ops.append(f"drawbox=x=0:y=main_h-{TICKER_H}:w=iw:h={TICKER_H}:color=black@0.55:t=fill")
-        draw_ops.append(
-            f"drawtext=fontfile='{FONT}':textfile='{ticker_file}':"
-            f"fontcolor=white:fontsize=42:line_spacing=0:borderw=0:"
-            f"x=w-mod(t*{TICKER_SPEED}, (text_w+w)):y=main_h-{TICKER_H}+{(TICKER_H-42)//2}"
-        )
+    subprocess.run(cmd, check=True)
 
-    parts.append(f"[base]{','.join(draw_ops)}[vout]")
-    fcx = ";".join(parts)
+def make_slideshow_video(
+    images: list[str],
+    captions: list[str],
+    audio_mp3: str,
+    out_mp4: str,
+    theme: str = "news",
+    ticker_text: str | None = None,
+):
+    """
+    Birden çok slaytı ardışık render edip tek videoda birleştirir,
+    ardından sesle mux eder.
+    """
+    assert images, "No images"
+    assert len(images) == len(captions), "images vs captions mismatch"
+
+    fps = int(os.getenv("FPS", "60"))
+    zoom_per_sec = float(os.getenv("BG_ZOOM_PER_SEC", "0.0018"))
+    ticker_h = int(os.getenv("TICKER_H", "120"))
+    xfade_sec = float(os.getenv("XFADE_SEC", "1.0"))
+
+    # Ses süresini ölç (segment sürelerini orantılı bölmek istersen burada mantık kurarsın)
+    # Basit yaklaşım: her slayta eşit süre
+    # Eğer toplam = N slayt ise audio süresini N'e böl.
+    # Aksi halde sabit 9s kullan.
+    try:
+        # ffprobe ile süre
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_mp3],
+            check=True, capture_output=True, text=True
+        )
+        total_audio = float(probe.stdout.strip())
+    except Exception:
+        total_audio = 27.0
+
+    n = len(images)
+    seg = max(6.0, total_audio / n)  # min 6s
+    tmp_slides = []
 
     try:
-        cmd = [
-            "ffmpeg","-y",
-            "-loop","1","-t", f"{duration:.2f}","-i", image_path,
-            "-filter_complex", fcx,
-            "-map","[vout]",
-            "-r", str(FPS),
-            "-c:v","libx264","-preset","veryfast","-crf","22",
-            "-pix_fmt","yuv420p",
-            "-an",
-            "-movflags","+faststart",
-            out_path
-        ]
-        subprocess.run(cmd, check=True)
-    finally:
-        try: os.unlink(cap_file)
-        except: pass
-        if ticker_file:
-            try: os.unlink(ticker_file)
-            except: pass
-
-def _xfade_video(slide_paths: List[str], out_path: str, seg: float):
-    n = len(slide_paths)
-    if n == 1:
-        subprocess.run([
-            "ffmpeg","-y","-i", slide_paths[0],
-            "-an","-c:v","libx264","-preset","veryfast","-crf","22",
-            "-pix_fmt","yuv420p","-r", str(FPS),"-movflags","+faststart",
-            out_path
-        ], check=True)
-        return
-
-    cmd = ["ffmpeg","-y"]
-    for p in slide_paths:
-        cmd += ["-i", p]
-
-    filters = []
-    prev = "[0:v]"
-    for i in range(1, n):
-        cur = f"[{i}:v]"
-        out = f"[v{i}]"
-        offset = max(0.0, i * (seg - XFADE_SEC))
-        filters.append(f"{prev}{cur}xfade=transition=fade:duration={XFADE_SEC}:offset={offset}{out}")
-        prev = out
-    filters.append(f"{prev}format=yuv420p[vout]")
-
-    cmd += [
-        "-filter_complex",";".join(filters),
-        "-map","[vout]",
-        "-r", str(FPS),
-        "-c:v","libx264","-preset","veryfast","-crf","22",
-        "-movflags","+faststart",
-        out_path
-    ]
-    subprocess.run(cmd, check=True)
-
-def _mix_audio_with_sfx(tts_mp3: str, slide_offsets_ms: List[int], total_sec: float, out_mp3: str):
-    have_bgm = BGM_FILE and os.path.exists(BGM_FILE)
-    have_whoosh = SFX_WHOOSH and os.path.exists(SFX_WHOOSH) and len(slide_offsets_ms) > 0
-    if not SFX_ENABLE and not have_bgm:
-        subprocess.run([
-            "ffmpeg","-y","-i", tts_mp3,
-            "-af","loudnorm=I=-18:TP=-1.5:LRA=11",
-            "-codec:a","libmp3lame","-b:a","128k", out_mp3
-        ], check=True)
-        return
-
-    cmd = ["ffmpeg","-y","-i",tts_mp3]
-    inputs = 1
-    if have_bgm:
-        cmd += ["-i", BGM_FILE]; inputs += 1
-    whoosh_count = 0
-    if have_whoosh:
-        for _ in slide_offsets_ms:
-            cmd += ["-i", SFX_WHOOSH]
-            whoosh_count += 1
-
-    fc = []
-    if have_bgm:
-        fc.append(f"[1:a]volume={BGM_VOL},atrim=0:{total_sec:.2f},asetpts=PTS-STARTPTS[bg0]")
-        if DUCK:
-            fc.append(f"[bg0][0:a]sidechaincompress=threshold=0.08:ratio=10:attack=5:release=700:makeup=3[bgduck]")
-            bg_in = "[bgduck]"
-        else:
-            bg_in = "[bg0]"
-
-    whoosh_labels = []
-    if whoosh_count:
-        base = 2 if have_bgm else 1
-        for i, ms in enumerate(slide_offsets_ms):
-            delay = max(0, int(ms))
-            fc.append(
-                f"[{base+i}:a]adelay={delay}|{delay},atrim=0:{total_sec:.2f},"
-                f"asetpts=PTS-STARTPTS,volume={SFX_VOL}[w{i}]"
+        for i, (img, cap) in enumerate(zip(images, captions), start=1):
+            slide_mp4 = f"/tmp/slide_{i}.mp4"
+            _make_slide(
+                img_path=img,
+                caption=cap,
+                seg_dur=seg,
+                out_mp4=slide_mp4,
+                theme=theme,
+                ticker_text=ticker_text,
+                fps=fps,
+                zoom_per_sec=zoom_per_sec,
+                ticker_h=ticker_h,
+                xfade_sec=xfade_sec,
             )
-            whoosh_labels.append(f"[w{i}]")
+            tmp_slides.append(slide_mp4)
 
-    mix_inputs = ["[0:a]"]
-    if have_bgm: mix_inputs.append(bg_in)
-    mix_inputs += whoosh_labels
-    fc.append(f"{''.join(mix_inputs)}amix=inputs={len(mix_inputs)}:normalize=0[mix]")
-    fc.append("[mix]loudnorm=I=-18:TP=-1.5:LRA=11[outa]")
+        # Slaytları concat
+        list_file = tempfile.mkstemp(suffix=".txt")[1]
+        with open(list_file, "w", encoding="utf-8") as f:
+            for p in tmp_slides:
+                f.write(f"file '{p}'\n")
 
-    cmd += [
-        "-filter_complex",";".join(fc),
-        "-map","[outa]",
-        "-codec:a","libmp3lame","-b:a","160k","-ar","44100","-ac","2",
-        out_mp3
-    ]
-    subprocess.run(cmd, check=True)
+        concat_mp4 = "/tmp/concat.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", concat_mp4],
+            check=True
+        )
 
-def _mux_audio(video_in: str, audio_mp3: str, out_path: str):
-    subprocess.run([
-        "ffmpeg","-y",
-        "-i", video_in,
-        "-i", audio_mp3,
-        "-shortest",
-        "-c:v","copy",
-        "-c:a","aac","-b:a","160k","-ar","44100","-ac","2",
-        "-movflags","+faststart",
-        out_path
-    ], check=True)
+        # Video + ses mux
+        os.makedirs(os.path.dirname(out_mp4), exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", concat_mp4,
+                "-i", audio_mp3,
+                "-c:v", "copy",
+                "-c:a", "aac", "-b:a", "128k",
+                "-shortest",
+                out_mp4,
+            ],
+            check=True
+        )
 
-def _overlay_waveform(in_mp4: str, out_mp4: str, has_ticker: bool):
-    bottom_margin = 40 + (TICKER_H if has_ticker else 0)
-    overlay_y = f"main_h-200-{bottom_margin}"
-    subprocess.run([
-        "ffmpeg","-y",
-        "-i", in_mp4,
-        "-filter_complex",
-        f"[0:a]showwaves=s=1080x200:mode=cline:rate={FPS}[wf];[0:v][wf]overlay=0:{overlay_y},format=yuv420p",
-        "-map","0:v","-map","0:a",
-        "-c:v","libx264","-preset","veryfast","-crf","22",
-        "-c:a","copy",
-        "-movflags","+faststart",
-        out_mp4
-    ], check=True)
-
-def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str, out_mp4: str,
-                         theme: str = "news", ticker_text: str | None = None):
-    total = _dur_sec(audio_mp3)
-    n = max(1, len(images))
-    seg = max(6, total / n)
-
-    slide_paths = []
-    for idx, img in enumerate(images):
-        slide_mp4 = f"/tmp/slide_{idx+1}.mp4"
-        cap = captions[idx] if idx < len(captions) else ""
-        _make_slide(img, cap, seg, slide_mp4, theme=theme, ticker_text=ticker_text)
-        slide_paths.append(slide_mp4)
-
-    temp_xfade = "/tmp/xfaded.mp4"
-    _xfade_video(slide_paths, temp_xfade, seg)
-
-    offsets_ms = [int(max(0, i * (seg - XFADE_SEC)) * 1000) for i in range(n)]
-    mixed_mp3 = "/tmp/mixed_audio.mp3"
-    _mix_audio_with_sfx(audio_mp3, offsets_ms, total, mixed_mp3)
-
-    temp_with_audio = "/tmp/with_audio.mp4"
-    _mux_audio(temp_xfade, mixed_mp3, temp_with_audio)
-
-    has_ticker = (theme == "news") and (ticker_text or "").strip() != ""
-    _overlay_waveform(temp_with_audio, out_mp4, has_ticker)
+    finally:
+        # geçici dosyaları serbest bırak
+        for p in tmp_slides:
+            try:
+                os.remove(p)
+            except Exception:
+                pass
