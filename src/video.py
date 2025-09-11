@@ -1,201 +1,217 @@
-# src/video.py
-import os, subprocess, tempfile, textwrap, datetime, shutil
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+import os
+import math
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import List, Tuple
 
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-def _write_tmp_textfile(txt: str) -> str:
-    # drawtext=textfile= ile kullanmak için geçici dosya
-    fd, path = tempfile.mkstemp(suffix=".txt")
-    os.write(fd, txt.encode("utf-8"))
-    os.close(fd)
-    return path
 
-def _ticker_text_block(t: str, repeat: int = 20) -> str:
-    t = t.strip().replace("\n", " ").replace("\r", " ")
-    if not t:
-        t = "Stay informed • Subscribe • "
-    return ("  •  ".join([t] * repeat)) + "     "
+W, H = 1080, 1920
+FONT_PATH_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-def _make_slide(
-    img_path: str,
-    caption: str,
-    seg_dur: float,
-    out_mp4: str,
-    theme: str = "news",
-    ticker_text: str | None = None,
-    fps: int = 60,
-    zoom_per_sec: float = 0.0018,
-    ticker_h: int = 120,
-    xfade_sec: float = 1.0,
-):
-    """
-    Tek kareden (image) dikey 1080x1920 MP4 segment üretir.
-    - Arka plan blur + hafif zoom
-    - Üst “etiket” (BREAKING NEWS / CRYPTO BRIEF / SPORTS BRIEF)
-    - Başlık (caption) ortada
-    - Alt kayan yazı (opsiyonel)
-    """
 
-    # Tema etiketi
-    theme_label = {
-        "news": "BREAKING NEWS",
-        "crypto": "CRYPTO BRIEF",
-        "sports": "SPORTS BRIEF",
-    }.get(theme, "DAILY BRIEF")
+def _safe_env(name: str, default: str) -> str:
+    v = os.getenv(name)
+    return v if v and str(v).strip() != "" else default
 
-    cap_file = _write_tmp_textfile(caption)
-    ticker_file = None
-    if ticker_text:
-        ticker_file = _write_tmp_textfile(_ticker_text_block(ticker_text, repeat=24))
 
-    # drawtext/drawbox'ta 'h' ve 'w' kullanılır; overlay'de main_w/main_h.
-    # Kayan yazı x= ifadesindeki virgülü kaçırıyoruz: \,
-    parts = []
+def _ffprobe_duration(path: str) -> float:
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=nw=1:nk=1",
+                path
+            ],
+            check=True, capture_output=True, text=True
+        ).stdout.strip()
+        d = float(out)
+        if d > 0:
+            return d
+    except Exception:
+        pass
+    return 60.0  # güvenli varsayılan
 
-    # 1) split/scale/blur/zoom/crop ve overlay
-    parts.append(
-        "[0:v]split=2[bgsrc][fgsrc];"
-        "[bgsrc]scale=1080:1920:force_original_aspect_ratio=increase,"
-        f"boxblur=20:1,zoompan=z='if(lte(on,1),1.0,zoom+{zoom_per_sec})':d=1:s=1080x1920[bg];"
-        "[fgsrc]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[fg];"
-        "[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[base]"
-    )
 
-    # 2) Üst etiket + başlık kutusu
-    parts.append(
-        "[base]"
-        f"drawtext=fontfile='{FONT_BOLD}':text='{theme_label}':fontcolor=white:fontsize=40:"
-        "box=1:boxcolor=red@0.85:boxborderw=20:x=40:y=30,"
-        "drawbox=x=0:y=60:w=iw:h=160:color=black@0.35:t=fill,"
-        f"drawtext=fontfile='{FONT_BOLD}':textfile='{cap_file}':fontcolor=white:fontsize=48:"
-        "line_spacing=8:borderw=2:bordercolor=black@0.6:text_shaping=1:"
-        "x=(w-text_w)/2:y=90[base2]"
-    )
+def _wrap_lines(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
+    words = text.split()
+    if not words:
+        return [""]
+    lines, line = [], ""
+    for w in words:
+        test = w if not line else f"{line} {w}"
+        bbox = draw.textbbox((0, 0), test, font=font, stroke_width=2)
+        if bbox[2] - bbox[0] <= max_width:
+            line = test
+        else:
+            if line:
+                lines.append(line)
+            line = w
+    if line:
+        lines.append(line)
+    return lines
 
-    # 3) Alt ticker (opsiyonel)
-    if ticker_file:
-        parts.append(
-            "[base2]"
-            f"drawbox=x=0:y=h-{ticker_h}:w=iw:h={ticker_h}:color=black@0.55:t=fill,"
-            f"drawtext=fontfile='{FONT_BOLD}':textfile='{ticker_file}':fontcolor=white:fontsize=42:"
-            "line_spacing=0:borderw=0:"
-            # virgülü kaçır: \,
-            f"x=w-mod(t*180.0\\,(text_w+w)):y=h-{ticker_h}+39[vout]"
+
+def _theme_colors(theme: str) -> Tuple[Tuple[int,int,int], Tuple[int,int,int]]:
+    t = (theme or "news").lower()
+    if t == "crypto":
+        # koyu yeşil -> neon yeşil
+        return (8, 20, 16), (0, 130, 80)
+    if t == "sports":
+        # koyu lacivert -> canlı mavi
+        return (10, 18, 40), (0, 120, 200)
+    # news / default
+    return (20, 20, 35), (130, 0, 0)
+
+
+def _make_gradient_bg(theme: str) -> Image.Image:
+    c1, c2 = _theme_colors(theme)
+    img = Image.new("RGB", (W, H), c1)
+    # dikey gradient
+    for y in range(H):
+        r = y / (H - 1)
+        col = (
+            int(c1[0] * (1 - r) + c2[0] * r),
+            int(c1[1] * (1 - r) + c2[1] * r),
+            int(c1[2] * (1 - r) + c2[2] * r),
         )
-        last_label = "[vout]"
-    else:
-        # Ticker yoksa doğrudan vout'a bağla
-        parts.append("[base2]null[vout]")
-        last_label = "[vout]"
+        ImageDraw.Draw(img).line([(0, y), (W, y)], fill=col)
+    # hafif blur + vignette
+    img = img.filter(ImageFilter.GaussianBlur(radius=2))
+    vignette = Image.new("L", (W, H), 0)
+    vdraw = ImageDraw.Draw(vignette)
+    vdraw.ellipse([(-W*0.2, -H*0.1), (W*1.2, H*1.3)], fill=255)
+    vignette = vignette.filter(ImageFilter.GaussianBlur(radius=200))
+    img = Image.composite(img, Image.new("RGB", (W, H), (0, 0, 0)), vignette.point(lambda p: 255 - p))
+    return img
 
-    filter_complex = ";".join(parts)
 
-    # ffmpeg komutu
+def _draw_caption_slide(text: str, theme: str, idx: int) -> str:
+    img = _make_gradient_bg(theme).convert("RGBA")
+    draw = ImageDraw.Draw(img)
+
+    # başlık şeridi (üst)
+    bar_h = 160
+    bar = Image.new("RGBA", (W, bar_h), (0, 0, 0, int(0.35 * 255)))
+    img.alpha_composite(bar, (0, 60))
+
+    # alt ticker şeridi (isteğe bağlı; şu an boş)
+    ticker_h = int(_safe_env("TICKER_H", "120"))
+    ticker_bar = Image.new("RGBA", (W, ticker_h), (0, 0, 0, int(0.55 * 255)))
+    img.alpha_composite(ticker_bar, (0, H - ticker_h))
+
+    # metni yaz
+    title_font = ImageFont.truetype(FONT_PATH_BOLD, 48)
+    inner_w = W - 80
+    lines = _wrap_lines(draw, text, title_font, inner_w)
+    y = 90  # bar üstünden biraz aşağı
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=title_font, stroke_width=2)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = (W - tw) // 2
+        draw.text((x, y), line, font=title_font, fill=(255, 255, 255, 255),
+                  stroke_width=2, stroke_fill=(0, 0, 0, 180))
+        y += th + 8
+
+    out_png = f"out/slide_{idx:02d}.png"
+    Path("out").mkdir(parents=True, exist_ok=True)
+    img.convert("RGB").save(out_png, "PNG", optimize=True)
+    return out_png
+
+
+def _png_to_mp4(png_path: str, duration: float, out_mp4: str, fps: int = 60) -> None:
+    # Basit, her yerde çalışan bir filter: ölçekle + yuv420p
     cmd = [
-        "ffmpeg",
-        "-y",
-        "-loop", "1",
-        "-t", f"{seg_dur:.2f}",
-        "-i", img_path,
-        "-filter_complex", filter_complex,
-        "-map", last_label,
+        "ffmpeg", "-y",
+        "-loop", "1", "-t", f"{duration:.2f}",
+        "-i", png_path,
+        "-vf", f"scale={W}:{H},format=yuv420p",
         "-r", str(fps),
         "-c:v", "libx264",
         "-preset", "veryfast",
-        "-crf", "22",
+        "-crf", _safe_env("CRF", "22"),
         "-pix_fmt", "yuv420p",
         "-an",
         "-movflags", "+faststart",
-        out_mp4,
+        out_mp4
     ]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-def make_slideshow_video(
-    images: list[str],
-    captions: list[str],
-    audio_mp3: str,
-    out_mp4: str,
-    theme: str = "news",
-    ticker_text: str | None = None,
-):
+
+def _concat_mp4(parts: List[str], out_mp4: str) -> None:
+    # concat demuxer kullan
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+        for p in parts:
+            f.write(f"file '{p}'\n")
+        list_path = f.name
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "concat", "-safe", "0", "-i", list_path,
+        "-c", "copy",
+        out_mp4
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _mux_audio(video_mp4: str, audio_mp3: str, out_mp4: str, bitrate: str = "128k") -> None:
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_mp4,
+        "-i", audio_mp3,
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", bitrate,
+        "-shortest",
+        "-movflags", "+faststart",
+        out_mp4
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str, out_mp4: str,
+                         theme: str = "news", ticker_text: str | None = None) -> None:
     """
-    Birden çok slaytı ardışık render edip tek videoda birleştirir,
-    ardından sesle mux eder.
+    images parametresini **görmezden gelir**; captions listesinden kendi slaytlarını üretir.
+    Her slayt için PNG -> MP4; sonra concat; sonra ses ile mux.
     """
-    assert images, "No images"
-    assert len(images) == len(captions), "images vs captions mismatch"
+    Path("out").mkdir(parents=True, exist_ok=True)
 
-    fps = int(os.getenv("FPS", "60"))
-    zoom_per_sec = float(os.getenv("BG_ZOOM_PER_SEC", "0.0018"))
-    ticker_h = int(os.getenv("TICKER_H", "120"))
-    xfade_sec = float(os.getenv("XFADE_SEC", "1.0"))
+    # Captions boşsa tek satırlık güvenli varsayılan
+    if not captions:
+        captions = ["60-second brief"]
 
-    # Ses süresini ölç (segment sürelerini orantılı bölmek istersen burada mantık kurarsın)
-    # Basit yaklaşım: her slayta eşit süre
-    # Eğer toplam = N slayt ise audio süresini N'e böl.
-    # Aksi halde sabit 9s kullan.
-    try:
-        # ffprobe ile süre
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_mp3],
-            check=True, capture_output=True, text=True
-        )
-        total_audio = float(probe.stdout.strip())
-    except Exception:
-        total_audio = 27.0
+    total_audio = _ffprobe_duration(audio_mp3)
+    n = max(1, len(captions))
 
-    n = len(images)
-    seg = max(6.0, total_audio / n)  # min 6s
-    tmp_slides = []
+    # Metin uzunluğuna göre kabaca süre bölüştür (min 3 sn)
+    lens = [max(1, len(c)) for c in captions]
+    L = float(sum(lens))
+    min_per = 3.0
+    raw = [max(min_per, total_audio * (ln / L)) for ln in lens]
+    # toplam ses süresine çok yaklaşsın:
+    scale = total_audio / max(1e-6, sum(raw))
+    durations = [max(2.5, r * scale) for r in raw]
+    # son slaytı tam eşitle
+    durations[-1] = max(2.5, total_audio - sum(durations[:-1]))
 
-    try:
-        for i, (img, cap) in enumerate(zip(images, captions), start=1):
-            slide_mp4 = f"/tmp/slide_{i}.mp4"
-            _make_slide(
-                img_path=img,
-                caption=cap,
-                seg_dur=seg,
-                out_mp4=slide_mp4,
-                theme=theme,
-                ticker_text=ticker_text,
-                fps=fps,
-                zoom_per_sec=zoom_per_sec,
-                ticker_h=ticker_h,
-                xfade_sec=xfade_sec,
-            )
-            tmp_slides.append(slide_mp4)
+    fps = int(_safe_env("FPS", "60"))
 
-        # Slaytları concat
-        list_file = tempfile.mkstemp(suffix=".txt")[1]
-        with open(list_file, "w", encoding="utf-8") as f:
-            for p in tmp_slides:
-                f.write(f"file '{p}'\n")
+    parts = []
+    for i, (cap, dur) in enumerate(zip(captions, durations), 1):
+        png = _draw_caption_slide(cap, theme, i)
+        part_mp4 = f"/tmp/slide_{i}.mp4"
+        _png_to_mp4(png, dur, part_mp4, fps=fps)
+        parts.append(part_mp4)
 
-        concat_mp4 = "/tmp/concat.mp4"
-        subprocess.run(
-            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", concat_mp4],
-            check=True
-        )
+    body = "/tmp/body.mp4"
+    _concat_mp4(parts, body)
 
-        # Video + ses mux
-        os.makedirs(os.path.dirname(out_mp4), exist_ok=True)
-        subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", concat_mp4,
-                "-i", audio_mp3,
-                "-c:v", "copy",
-                "-c:a", "aac", "-b:a", "128k",
-                "-shortest",
-                out_mp4,
-            ],
-            check=True
-        )
+    _mux_audio(body, audio_mp3, out_mp4, bitrate=_safe_env("TTS_BITRATE", "128k"))
 
-    finally:
-        # geçici dosyaları serbest bırak
-        for p in tmp_slides:
-            try:
-                os.remove(p)
-            except Exception:
-                pass
+    print(f"[video] done -> {out_mp4}")
