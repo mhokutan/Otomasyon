@@ -14,8 +14,7 @@ concurrency:
 
 jobs:
   morning-crypto:
-    # Sadece 11:00 UTC cron’unda ya da manuel tetikte çalış
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 11 * * *')
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 11 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -41,56 +40,70 @@ jobs:
 
       - name: Preflight – required secrets/vars present?
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          OPENAI_API_KEY_S: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY_V: ${{ vars.OPENAI_API_KEY }}
+          YT_CLIENT_ID_S: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET_S: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN_S: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
           set -e
-          [ -n "$OPENAI_API_KEY" ] || { echo "::error::Missing OPENAI_API_KEY"; exit 1; }
-          [ -n "$YT_CLIENT_ID" ] || { echo "::error::Missing YT_CLIENT_ID"; exit 1; }
-          [ -n "$YT_CLIENT_SECRET" ] || { echo "::error::Missing YT_CLIENT_SECRET"; exit 1; }
-          [ -n "$YT_REFRESH_TOKEN" ] || { echo "::error::Missing YT_REFRESH_TOKEN"; exit 1; }
-          echo "All required credentials are present ✅"
+          if [ -z "${OPENAI_API_KEY_S}${OPENAI_API_KEY_V}" ]; then
+            echo "::error::Missing OPENAI_API_KEY (Secrets or Variables)"
+            exit 1
+          fi
+          for k in YT_CLIENT_ID_S YT_CLIENT_SECRET_S YT_REFRESH_TOKEN_S; do
+            if [ -z "${!k}" ]; then
+              echo "::error::Missing YouTube secret: ${k%_S}"
+              exit 1
+            fi
+          done
+          echo "Creds OK ✅"
 
       - name: Run generator (CRYPTO morning EN)
         env:
-          # Theme & content
+          # --- Content selection ---
           THEME: "crypto"
           CRYPTO_COINS: "bitcoin,ethereum,solana"
           VIDEO_TITLE_PREFIX: "Daily Crypto Brief:"
           LANGUAGE: "en"
           REGION: "US"
 
-          # Voice & render
-          TTS_VOICE: "alloy"
-          TTS_ATEMPO: "1.05"
-          TTS_GAP_MS: "10"
-          TTS_BITRATE: "128k"
-          BG_ZOOM_PER_SEC: "0.0018"
-          XFADE_SEC: "1.0"
-          TICKER_SPEED: "170"
-          TICKER_H: "120"
-          FPS: "60"
-
-          # Models (ucuz)
+          # --- OpenAI (cheap models) ---
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: "https://api.openai.com/v1"
           OPENAI_MODEL_CHAT: "gpt-4o-mini"
           OPENAI_MODEL_TTS:  "gpt-4o-mini-tts"
           OPENAI_MAX_TOKENS: "400"
           OPENAI_TEMPERATURE: "0.7"
 
-          # Optional HF (AI görsel)
-          HF_TOKEN: ${{ secrets.HF_TOKEN || vars.HF_TOKEN }}
+          # --- TTS tuning (no gap_ms) ---
+          TTS_VOICE: "alloy"
+          TTS_ATEMPO: "1.07"
+          TTS_BITRATE: "128k"
 
-          # YouTube OAuth
+          # --- Visuals / render ---
+          BG_IMAGES_PER_SLIDE: "5"
+          FPS: "60"
+          CRF: "22"
+
+          # Breaking banner
+          BREAKING_ON: "1"
+          BREAKING_TEXT: "BREAKING NEWS"
+
+          # Presenter avatar (optional URL, else initials used)
+          PRESENTER_URL: ""
+          PRESENTER_POS: "top-right"   # top-left | top-right | bottom-left | bottom-right
+          PRESENTER_SIZE: "260"
+          PRESENTER_INITIALS: "AI"
+
+          # Optional AI images via HuggingFace (optional)
+          HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
+
+          # YouTube OAuth secrets
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
-
-          # OpenAI
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: "https://api.openai.com/v1"
 
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
@@ -109,8 +122,7 @@ jobs:
           retention-days: 7
 
   evening-sports:
-    # Sadece 23:00 UTC cron’unda ya da manuel tetikte çalış
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 23 * * *')
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 23 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -136,50 +148,69 @@ jobs:
 
       - name: Preflight – required secrets/vars present?
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          OPENAI_API_KEY_S: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY_V: ${{ vars.OPENAI_API_KEY }}
+          YT_CLIENT_ID_S: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET_S: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN_S: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
           set -e
-          [ -n "$OPENAI_API_KEY" ] || { echo "::error::Missing OPENAI_API_KEY"; exit 1; }
-          [ -n "$YT_CLIENT_ID" ] || { echo "::error::Missing YT_CLIENT_ID"; exit 1; }
-          [ -n "$YT_CLIENT_SECRET" ] || { echo "::error::Missing YT_CLIENT_SECRET"; exit 1; }
-          [ -n "$YT_REFRESH_TOKEN" ] || { echo "::error::Missing YT_REFRESH_TOKEN"; exit 1; }
-          echo "All required credentials are present ✅"
+          if [ -z "${OPENAI_API_KEY_S}${OPENAI_API_KEY_V}" ]; then
+            echo "::error::Missing OPENAI_API_KEY (Secrets or Variables)"
+            exit 1
+          fi
+          for k in YT_CLIENT_ID_S YT_CLIENT_SECRET_S YT_REFRESH_TOKEN_S; do
+            if [ -z "${!k}" ]; then
+              echo "::error::Missing YouTube secret: ${k%_S}"
+              exit 1
+            fi
+          done
+          echo "Creds OK ✅"
 
       - name: Run generator (SPORTS evening EN)
         env:
+          # --- Content selection (sports via RSS) ---
           THEME: "news"
           RSS_URL: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en&q=sports"
           VIDEO_TITLE_PREFIX: "Sports Brief:"
           LANGUAGE: "en"
           REGION: "US"
 
-          TTS_VOICE: "alloy"
-          TTS_ATEMPO: "1.05"
-          TTS_GAP_MS: "10"
-          TTS_BITRATE: "128k"
-          BG_ZOOM_PER_SEC: "0.0018"
-          XFADE_SEC: "1.0"
-          TICKER_SPEED: "180"
-          TICKER_H: "120"
-          FPS: "60"
-
+          # --- OpenAI (cheap models) ---
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: "https://api.openai.com/v1"
           OPENAI_MODEL_CHAT: "gpt-4o-mini"
           OPENAI_MODEL_TTS:  "gpt-4o-mini-tts"
           OPENAI_MAX_TOKENS: "400"
           OPENAI_TEMPERATURE: "0.7"
 
-          HF_TOKEN: ${{ secrets.HF_TOKEN || vars.HF_TOKEN }}
+          # --- TTS tuning ---
+          TTS_VOICE: "alloy"
+          TTS_ATEMPO: "1.07"
+          TTS_BITRATE: "128k"
 
+          # --- Visuals / render ---
+          BG_IMAGES_PER_SLIDE: "5"
+          FPS: "60"
+          CRF: "22"
+
+          # Breaking banner
+          BREAKING_ON: "1"
+          BREAKING_TEXT: "BREAKING NEWS"
+
+          # Presenter avatar (optional)
+          PRESENTER_URL: ""
+          PRESENTER_POS: "top-right"
+          PRESENTER_SIZE: "260"
+          PRESENTER_INITIALS: "AI"
+
+          HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
+
+          # YouTube OAuth
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
-
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: "https://api.openai.com/v1"
 
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
