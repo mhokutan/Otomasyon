@@ -3,9 +3,9 @@ name: yt-auto
 on:
   workflow_dispatch:
   schedule:
-    # New York 07:00 (EDT ≈ UTC 11:00)
+    # New York 07:00 (EDT ≈ UTC 11:00 UTC)
     - cron: "0 11 * * *"
-    # New York 19:00 (EDT ≈ UTC 23:00)
+    # New York 19:00 (EDT ≈ UTC 23:00 UTC)
     - cron: "0 23 * * *"
 
 concurrency:
@@ -71,12 +71,9 @@ jobs:
           # --- OpenAI (cheap models) ---
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: "https://api.openai.com/v1"
-          OPENAI_MODEL_CHAT: "gpt-4o-mini"
           OPENAI_MODEL_TTS:  "gpt-4o-mini-tts"
-          OPENAI_MAX_TOKENS: "400"
-          OPENAI_TEMPERATURE: "0.7"
 
-          # --- TTS tuning (no gap_ms) ---
+          # --- TTS tuning ---
           TTS_VOICE: "alloy"
           TTS_ATEMPO: "1.07"
           TTS_BITRATE: "128k"
@@ -96,10 +93,10 @@ jobs:
           PRESENTER_SIZE: "260"
           PRESENTER_INITIALS: "AI"
 
-          # Optional AI images via HuggingFace (optional)
+          # Optional AI images via HuggingFace (not required)
           HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
 
-          # YouTube OAuth secrets
+          # YouTube OAuth
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
@@ -179,10 +176,7 @@ jobs:
           # --- OpenAI (cheap models) ---
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: "https://api.openai.com/v1"
-          OPENAI_MODEL_CHAT: "gpt-4o-mini"
           OPENAI_MODEL_TTS:  "gpt-4o-mini-tts"
-          OPENAI_MAX_TOKENS: "400"
-          OPENAI_TEMPERATURE: "0.7"
 
           # --- TTS tuning ---
           TTS_VOICE: "alloy"
