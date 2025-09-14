@@ -1,21 +1,24 @@
 # YouTube Auto Shorts (Crypto AM, Sports PM)
 
-- **AM 07:00 New York** → Crypto brief
-- **PM 19:00 New York** → Sports brief (via Google News RSS)
-- English script + OpenAI TTS, 60 fps, optional AI images (HF), SFX/BGM with ducking.
+- **AM 07:00 New York (UTC 11:00)** → Crypto brief
+- **PM 19:00 New York (UTC 23:00)** → Sports brief (Google News RSS)
+- English scripts + OpenAI TTS (cheap: `gpt-4o-mini-tts`)
+- 60 fps vertical video, dynamic changing backgrounds, optional presenter avatar & BREAKING banner
+- YouTube upload sets **Not made for kids** automatically
 
-## Secrets required
-- `OPENAI_API_KEY` (for TTS)
-- `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN` (YouTube upload, OAuth)
-- `HF_TOKEN` (optional, HuggingFace Inference API for images)
+## Required Secrets
+- `OPENAI_API_KEY`
+- `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN`
 
-## Optional assets
-Put your audio files in `assets/sfx/`:
-- `bgm.mp3` (background music)
-- `whoosh.wav` (transition SFX)
+Optional:
+- `HF_TOKEN` (not required; images are pulled from picsum.photos instead)
 
-If missing, pipeline skips them gracefully.
+## Tuning (via env in workflow)
+- `TTS_ATEMPO` (e.g. `1.07`)  
+- `BG_IMAGES_PER_SLIDE` (e.g. `5`)  
+- `PRESENTER_URL`, `PRESENTER_INITIALS`, `PRESENTER_POS`, `PRESENTER_SIZE`  
+- `BREAKING_ON`, `BREAKING_TEXT`  
 
 ## Run
-- Push to `main` and wait for cron, or run **Actions → yt-auto → Run workflow**.
-- Outputs saved under `out/` and uploaded as build artifacts.
+- Push to `main` or trigger **Actions → yt-auto → Run workflow**.
+- Outputs saved under `out/` and uploaded as artifacts.
