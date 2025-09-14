@@ -2,22 +2,19 @@ name: yt-auto
 
 on:
   workflow_dispatch:
+  # Her 3 saatte bir (00:00, 03:00, 06:00, ...)
   schedule:
-    # New York 07:00 (EDT ≈ UTC 11:00 UTC)
-    - cron: "0 11 * * *"
-    # New York 19:00 (EDT ≈ UTC 23:00 UTC)
-    - cron: "0 23 * * *"
+    - cron: "0 */3 * * *"
 
+# Aynı anda birden fazla run çakışmasın
 concurrency:
   group: yt-auto
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  morning-crypto:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 11 * * *'
+  crypto-every-3h:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,9 +54,9 @@ jobs:
               exit 1
             fi
           done
-          echo "Creds OK ✅"
+          echo "Credentials OK ✅"
 
-      - name: Run generator (CRYPTO morning EN)
+      - name: Run generator (CRYPTO • EN)
         env:
           # --- Content selection ---
           THEME: "crypto"
@@ -71,9 +68,12 @@ jobs:
           # --- OpenAI (cheap models) ---
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: "https://api.openai.com/v1"
+          OPENAI_MODEL_CHAT: "gpt-4o-mini"
           OPENAI_MODEL_TTS:  "gpt-4o-mini-tts"
+          OPENAI_MAX_TOKENS: "400"
+          OPENAI_TEMPERATURE: "0.7"
 
-          # --- TTS tuning ---
+          # --- TTS ---
           TTS_VOICE: "alloy"
           TTS_ATEMPO: "1.07"
           TTS_BITRATE: "128k"
@@ -87,20 +87,21 @@ jobs:
           BREAKING_ON: "1"
           BREAKING_TEXT: "BREAKING NEWS"
 
-          # Presenter avatar (optional URL, else initials used)
+          # Presenter avatar (optional)
           PRESENTER_URL: ""
-          PRESENTER_POS: "top-right"   # top-left | top-right | bottom-left | bottom-right
+          PRESENTER_POS: "top-right"
           PRESENTER_SIZE: "260"
           PRESENTER_INITIALS: "AI"
 
-          # Optional AI images via HuggingFace (not required)
+          # Optional AI images (HF)
           HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
 
-          # YouTube OAuth
+          # YouTube OAuth + audience
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
+          YT_MADE_FOR_KIDS: "false"   # << çocuklar için değil
 
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
@@ -109,20 +110,18 @@ jobs:
           mkdir -p out
           python src/main.py
 
-      - name: Upload artifact (morning)
+      - name: Upload artifact (crypto)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: output-morning
+          name: output-crypto
           path: out/**
           if-no-files-found: warn
           retention-days: 7
 
-  evening-sports:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 23 * * *'
+  sports-every-3h:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -162,9 +161,9 @@ jobs:
               exit 1
             fi
           done
-          echo "Creds OK ✅"
+          echo "Credentials OK ✅"
 
-      - name: Run generator (SPORTS evening EN)
+      - name: Run generator (SPORTS/NEWS • EN)
         env:
           # --- Content selection (sports via RSS) ---
           THEME: "news"
@@ -176,9 +175,12 @@ jobs:
           # --- OpenAI (cheap models) ---
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: "https://api.openai.com/v1"
+          OPENAI_MODEL_CHAT: "gpt-4o-mini"
           OPENAI_MODEL_TTS:  "gpt-4o-mini-tts"
+          OPENAI_MAX_TOKENS: "400"
+          OPENAI_TEMPERATURE: "0.7"
 
-          # --- TTS tuning ---
+          # --- TTS ---
           TTS_VOICE: "alloy"
           TTS_ATEMPO: "1.07"
           TTS_BITRATE: "128k"
@@ -200,11 +202,12 @@ jobs:
 
           HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
 
-          # YouTube OAuth
+          # YouTube OAuth + audience
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
+          YT_MADE_FOR_KIDS: "false"
 
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
@@ -213,11 +216,11 @@ jobs:
           mkdir -p out
           python src/main.py
 
-      - name: Upload artifact (evening)
+      - name: Upload artifact (sports)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: output-evening
+          name: output-sports
           path: out/**
           if-no-files-found: warn
           retention-days: 7
