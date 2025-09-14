@@ -8,6 +8,12 @@ from google.oauth2.credentials import Credentials
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
 def _get_creds() -> Credentials:
     client_id = os.getenv("YT_CLIENT_ID")
     client_secret = os.getenv("YT_CLIENT_SECRET")
@@ -27,7 +33,12 @@ def _get_creds() -> Credentials:
     return creds
 
 def try_upload_youtube(video_path: str, title: str, description: str, privacy_status: str = "public") -> Optional[str]:
+    # Privacy guard
     privacy = privacy_status if privacy_status in {"public","private","unlisted"} else "public"
+
+    # Audience: default FALSE (not made for kids); can override via env if istenirse
+    # Set YT_MADE_FOR_KIDS=true to switch.
+    made_for_kids = _get_bool_env("YT_MADE_FOR_KIDS", False)
 
     creds = _get_creds()
     youtube = build("youtube", "v3", credentials=creds)
@@ -36,11 +47,12 @@ def try_upload_youtube(video_path: str, title: str, description: str, privacy_st
         "snippet": {
             "title": title[:95],
             "description": description[:4900],
-            "categoryId": "24"  # Entertainment (ok for shorts)
+            "categoryId": "24"  # Entertainment (Shorts için uygun)
         },
         "status": {
             "privacyStatus": privacy,
-            "madeForKids": False  # COPPA: Not made for kids
+            # 🔴 DOĞRU ALAN: selfDeclaredMadeForKids
+            "selfDeclaredMadeForKids": made_for_kids
         }
     }
 
