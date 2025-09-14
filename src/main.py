@@ -5,10 +5,9 @@ import time
 import subprocess
 from pathlib import Path
 
-from scriptgen import generate_script, build_titles  # <-- üçlü döner!
+from scriptgen import generate_script, build_titles
 from tts import synth_tts_to_mp3
 
-# Bu iki modül zaten repoda var diye varsayıyorum:
 try:
     from video import make_slideshow_video
 except Exception:
@@ -28,9 +27,6 @@ def _ts(fmt: str = "%Y%m%d-%H%M%S") -> str:
     return time.strftime(fmt, time.gmtime())
 
 def _fallback_black_video(image_w: int, image_h: int, audio_mp3: str, out_mp4: str) -> None:
-    """
-    Görsel pipeline çökerse: siyah arka plan + ses ile MP4 üret.
-    """
     cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", f"color=c=black:s={image_w}x{image_h}:d=9999",
@@ -44,13 +40,13 @@ def _fallback_black_video(image_w: int, image_h: int, audio_mp3: str, out_mp4: s
 
 def main():
     Path("out").mkdir(parents=True, exist_ok=True)
-    theme   = _env("THEME", "crypto").lower()
+
+    theme   = (_env("THEME", "crypto") or "crypto").lower()
     lang    = _env("LANGUAGE", "en")
     region  = _env("REGION", "US")
     rss_url = _env("RSS_URL", None)
 
     print(">> Fetching content...")
-    # generate_script -> (script_text, captions_list, coins_data_or_none)
     script, captions, coins_data = generate_script(
         mode=theme,
         language=lang,
@@ -59,7 +55,6 @@ def main():
     )
     print("SCRIPT:\n", script if isinstance(script, str) else str(script))
 
-    # Başlık & açıklama
     title_prefix = _env("VIDEO_TITLE_PREFIX", {
         "crypto": "Daily Crypto Brief:",
         "sports": "Sports Brief:",
@@ -67,10 +62,8 @@ def main():
     }.get(theme, "Daily Brief:"))
     title, description = build_titles(theme, captions=captions, coins_data=coins_data, title_prefix=title_prefix)
 
-    # TTS ayarları
     voice    = _env("TTS_VOICE", "alloy")
-    atempo   = _env("TTS_ATEMPO", "1.05")      # hız; 0.5–2.0 arası (zincirlenir)
-    gap_ms   = _env("TTS_GAP_MS", "10")        # cümleler arası sessizlik (ms)
+    atempo   = _env("TTS_ATEMPO", "1.05")
     bitrate  = _env("TTS_BITRATE", "128k")
 
     mp3_path = f"out/voice-{_ts()}.mp3"
@@ -82,18 +75,16 @@ def main():
         out_mp3=mp3_path,
         voice=voice,
         atempo=atempo,
-        gap_ms=gap_ms,
         bitrate=bitrate,
     )
 
     print(">> Building visuals...")
-    images = []  # video.py kendi içinde AI/placeholder üretiyorsa boş liste sorun olmaz
+    images: list[str] = []  # video.py kendi görselini zaten oluşturuyor
 
     print(">> Render video...")
     rendered = False
     if make_slideshow_video is not None:
         try:
-            # video.py imzan farklıysa burayı senin fonksiyonuna uydur
             make_slideshow_video(images, captions, mp3_path, mp4_path, theme=theme, ticker_text=None)
             rendered = True
         except Exception as e:
@@ -104,11 +95,10 @@ def main():
 
     print(f">> Done: {mp4_path}")
 
-    # YouTube yükleme (varsa kimlik)
     print(">> Trying YouTube upload (if creds exist)...")
     if try_upload_youtube is not None:
         try:
-            privacy = _env("YT_PRIVACY", "public")
+            privacy = _env("YT_PRIVACY", "public") or "public"
             url = try_upload_youtube(mp4_path, title=title, description=description, privacy_status=privacy)
             if url:
                 print(">> Uploaded:", url)
