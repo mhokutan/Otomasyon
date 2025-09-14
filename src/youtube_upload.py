@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os, time
 from typing import Optional
 from googleapiclient.discovery import build
@@ -22,14 +23,11 @@ def _get_creds() -> Credentials:
         client_secret=client_secret,
         scopes=SCOPES,
     )
-    # Force refresh to get access token
     creds.refresh(Request())
     return creds
 
 def try_upload_youtube(video_path: str, title: str, description: str, privacy_status: str = "public") -> Optional[str]:
-    privacy = privacy_status or "public"
-    if privacy not in {"public","private","unlisted"}:
-        privacy = "public"
+    privacy = privacy_status if privacy_status in {"public","private","unlisted"} else "public"
 
     creds = _get_creds()
     youtube = build("youtube", "v3", credentials=creds)
@@ -40,7 +38,10 @@ def try_upload_youtube(video_path: str, title: str, description: str, privacy_st
             "description": description[:4900],
             "categoryId": "24"  # Entertainment (ok for shorts)
         },
-        "status": {"privacyStatus": privacy}
+        "status": {
+            "privacyStatus": privacy,
+            "madeForKids": False  # COPPA: Not made for kids
+        }
     }
 
     media = MediaFileUpload(video_path, chunksize=1024*1024, resumable=True, mimetype="video/mp4")
@@ -53,6 +54,5 @@ def try_upload_youtube(video_path: str, title: str, description: str, privacy_st
             print(f"Upload {int(status.progress()*100)}%")
     video_id = response.get("id")
     if video_id:
-        # Shorts: add #shorts tag in title/desc if vertical < 60s is preferred.
         return f"https://www.youtube.com/watch?v={video_id}"
     return None
