@@ -24,7 +24,6 @@ def _ffprobe_duration(path: str) -> float:
     except Exception:
         return 60.0
 
-# ---------------- Tema renkleri ----------------
 def _theme_colors(theme: str) -> Tuple[Tuple[int,int,int], Tuple[int,int,int], Tuple[int,int,int]]:
     t = (theme or "news").lower()
     if t == "crypto":
@@ -53,7 +52,6 @@ def _fallback_bg(theme: str) -> Image.Image:
     img  = Image.composite(spot, img, mask)
     return img
 
-# --------------- Görseller ----------------
 def _picsum_urls(count: int) -> List[str]:
     ts = int(time.time())
     return [f"https://picsum.photos/{W}/{H}?random={ts+i+random.randint(0,99999)}" for i in range(count)]
@@ -78,7 +76,6 @@ def _fit_cover(img: Image.Image, w=W, h=H) -> Image.Image:
     y = (nh - h)//2
     return img2.crop((x, y, x+w, y+h))
 
-# --------------- Metin yardımcıları ---------------
 def _wrap_lines(drw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
     words = (text or "").split()
     if not words: return [""]
@@ -94,7 +91,6 @@ def _wrap_lines(drw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFon
     if cur: lines.append(cur)
     return lines
 
-# --------------- Spiker avatar ---------------
 def _load_presenter_avatar(size: int) -> Image.Image | None:
     url = _env("PRESENTER_URL", "")
     try:
@@ -105,31 +101,27 @@ def _load_presenter_avatar(size: int) -> Image.Image | None:
         else:
             p = None
         if not p:
-            # Basit placeholder (harfli)
             avatar = Image.new("RGBA", (size, size), (30,30,30,255))
             m = Image.new("L", (size, size), 0)
             ImageDraw.Draw(m).ellipse((0,0,size-1,size-1), fill=255)
             avatar.putalpha(m)
-            dr = ImageDraw.Draw(avatar)
             try:
                 fnt = ImageFont.truetype(FONT_BOLD, size//2)
             except Exception:
                 fnt = ImageFont.load_default()
             txt = _env("PRESENTER_INITIALS","AI")
+            dr = ImageDraw.Draw(avatar)
             bb = dr.textbbox((0,0), txt, font=fnt)
             dr.text(((size-(bb[2]-bb[0]))//2, (size-(bb[3]-bb[1]))//2),
                     txt, font=fnt, fill=(255,255,255,255))
             return avatar
         img = Image.open(p).convert("RGBA").resize((size,size), Image.LANCZOS)
-        # dairesel maske
         mask = Image.new("L", (size,size), 0)
         ImageDraw.Draw(mask).ellipse((0,0,size-1,size-1), fill=255)
-        # gölge
         shadow = Image.new("RGBA", (size+20,size+20), (0,0,0,0))
         sd = ImageDraw.Draw(shadow)
         sd.ellipse((10,10,size+10,size+10), fill=(0,0,0,140))
         shadow = shadow.filter(ImageFilter.GaussianBlur(8))
-        # birleştir
         base = Image.new("RGBA", (size+20,size+20), (0,0,0,0))
         base.alpha_composite(shadow,(0,0))
         circle = Image.new("RGBA", (size,size), (0,0,0,0))
@@ -140,10 +132,10 @@ def _load_presenter_avatar(size: int) -> Image.Image | None:
         return None
 
 def _place_presenter(canvas: Image.Image, avatar: Image.Image, pos: str):
-    if avatar is None: 
+    if avatar is None:
         return
     aw, ah = avatar.size
-    m = 40  # kenar boşluk
+    m = 40
     ticker_h = int(_env("TICKER_H","120"))
     if pos == "bottom-left":
         xy = (m, H - ticker_h - ah - m)
@@ -151,25 +143,21 @@ def _place_presenter(canvas: Image.Image, avatar: Image.Image, pos: str):
         xy = (W - aw - m, H - ticker_h - ah - m)
     elif pos == "top-right":
         xy = (W - aw - m, 220)
-    else:  # top-left
+    else:
         xy = (m, 220)
     canvas.alpha_composite(avatar, xy)
 
-# --------------- Kompozit: caption + banner + spiker ---------------
 def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: int=0) -> Image.Image:
     img = bg.convert("RGBA")
 
-    # Üst şerit (başlık zemini)
     topbar_h = 160
     topbar = Image.new("RGBA", (W, topbar_h), (0,0,0, int(0.35*255)))
     img.alpha_composite(topbar, (0,60))
 
-    # Alt ticker zemin
     ticker_h = int(_env("TICKER_H","120"))
     bottombar = Image.new("RGBA", (W, ticker_h), (0,0,0, int(0.55*255)))
     img.alpha_composite(bottombar, (0, H - ticker_h))
 
-    # BREAKING bandı
     if _env("BREAKING_ON","0") in ("1","true","True","yes"):
         text = _env("BREAKING_TEXT","BREAKING NEWS")
         try:
@@ -180,15 +168,12 @@ def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: i
         bb = draw.textbbox((0,0), text, font=bf)
         tw, th = bb[2]-bb[0], bb[3]-bb[1]
         padx, pady = 28, 16
-        # hafif "blink": alpha'yı varye et
         alpha = 220 if (blink_variant % 2 == 0) else 180
         box = Image.new("RGBA", (tw+padx*2, th+pady*2), (255,49,49, alpha))
-        # hafif köşe ovali efekti için blur
         box = box.filter(ImageFilter.GaussianBlur(0.5))
         img.alpha_composite(box, (40, 30))
         draw.text((40+padx, 30+pady), text, font=bf, fill=(255,255,255,255))
 
-    # Başlık metni
     try:
         title_font = ImageFont.truetype(FONT_BOLD, 50)
     except Exception:
@@ -204,7 +189,6 @@ def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: i
                   stroke_width=3, stroke_fill=(0,0,0,190))
         y += th + 10
 
-    # Spiker
     size = int(_env("PRESENTER_SIZE","260"))
     pos  = _env("PRESENTER_POS","top-right")
     avatar = _load_presenter_avatar(size)
@@ -213,7 +197,6 @@ def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: i
 
     return img.convert("RGB")
 
-# --------------- PNG -> MP4 / concat / mux ---------------
 def _png_to_video(png: str, duration: float, out_mp4: str, fps: int=60):
     cmd = [
         "ffmpeg","-y",
@@ -236,7 +219,6 @@ def _concat(parts: list[str], out_mp4: str):
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 def _mux(video_mp4: str, audio_mp3: str, out_mp4: str, bitrate="128k"):
-    # YT uyumluluğu için videoyu yeniden encode et +faststart
     cmd = [
         "ffmpeg","-y",
         "-i", video_mp4, "-i", audio_mp3,
@@ -249,22 +231,14 @@ def _mux(video_mp4: str, audio_mp3: str, out_mp4: str, bitrate="128k"):
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-# --------------- Ana ---------------
 def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str, out_mp4: str,
                          theme: str="news", ticker_text: str|None=None) -> None:
-    """
-    Her slayt için çoklu arka plan görseli:
-      - Ücretsiz picsum.photos’tan çekilir (anahtarsız).
-      - Başlık + BREAKING bandı + spiker avatar Pillow ile basılır.
-      - Her görsel kısa mp4, concat -> slayt; slaytlar concat -> body; body + ses -> final.
-    """
     Path("out").mkdir(parents=True, exist_ok=True)
     if not captions:
         captions = ["60-second brief"]
 
     total = _ffprobe_duration(audio_mp3)
 
-    # süre dağıtımı
     lens = [max(1, len(c)) for c in captions]
     total_weight = float(sum(lens)) or 1.0
     min_per = 3.0
