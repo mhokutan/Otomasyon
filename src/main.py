@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 import os
+import json
 import sys
 import time
 import traceback
@@ -46,6 +47,26 @@ def _append_error(msg: str) -> None:
     Path("out").mkdir(parents=True, exist_ok=True)
     with open("out/error.log", "a", encoding="utf-8") as f:
         f.write(msg.rstrip() + "\n")
+
+def _print_youtube_error_summary() -> None:
+    path = Path("out/youtube_error.json")
+    if not path.exists():
+        print(">> YouTube upload hatasıyla ilgili ayrıntı bulunamadı (out/youtube_error.json yok).", flush=True)
+        return
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f">> youtube_error.json okunamadı: {e}", flush=True)
+        return
+
+    detail = None
+    if isinstance(data, dict):
+        detail = data.get("http_error") or data.get("error") or json.dumps(data, ensure_ascii=False)
+    if detail is None:
+        detail = json.dumps(data, ensure_ascii=False)
+
+    print(f">> YouTube upload hata özeti: {detail}", flush=True)
 
 def _ffmpeg_silence_mp3(out_mp3: str, seconds: int = 30) -> None:
     """TTS yoksa/sorunluysa: 30 sn sessiz MP3 üret."""
@@ -191,16 +212,45 @@ def main() -> None:
     # 5) YouTube yükleme (opsiyonel; hata olsa da düşürme)
     print(">> Trying YouTube upload (if creds exist)...", flush=True)
     try:
-        if callable(try_upload_youtube) and _env("YT_CLIENT_ID") and _env("YT_CLIENT_SECRET") and _env("YT_REFRESH_TOKEN"):
-            privacy = _env("YT_PRIVACY", "public") or "public"
-            url = try_upload_youtube(mp4_path, title=title, description=description, privacy_status=privacy)
-            if url:
-                print(">> Uploaded:", url, flush=True)
-            else:
-                _append_error("[upload warning] uploader returned no URL")
-                print(">> Upload skipped or failed (no URL).", flush=True)
+        if not callable(try_upload_youtube):
+            msg = ">> YouTube uploader modülü bulunamadı; yükleme atlandı."
+            print(msg, flush=True)
+            _append_error("[upload warning] uploader module missing")
         else:
-            print(">> Uploader not configured; skipping.", flush=True)
+            yt_client_id = _env("YT_CLIENT_ID")
+            yt_client_secret = _env("YT_CLIENT_SECRET")
+            yt_refresh_token = _env("YT_REFRESH_TOKEN")
+            missing_envs = [
+                name for name, value in {
+                    "YT_CLIENT_ID": yt_client_id,
+                    "YT_CLIENT_SECRET": yt_client_secret,
+                    "YT_REFRESH_TOKEN": yt_refresh_token,
+                }.items() if not value
+            ]
+            if missing_envs:
+                reason = ", ".join(missing_envs)
+                print(
+                    ">> YouTube yüklemesi yapılamadı: eksik ortam değişkenleri: "
+                    + reason,
+                    flush=True,
+                )
+                _append_error(
+                    "[upload warning] missing required env vars for YouTube upload: " + reason
+                )
+            else:
+                privacy = _env("YT_PRIVACY", "public") or "public"
+                url = try_upload_youtube(
+                    mp4_path,
+                    title=title,
+                    description=description,
+                    privacy_status=privacy,
+                )
+                if url:
+                    print(">> Uploaded:", url, flush=True)
+                else:
+                    _append_error("[upload warning] uploader returned no URL")
+                    print(">> Upload skipped or failed (no URL).", flush=True)
+                    _print_youtube_error_summary()
     except Exception as e:
         _append_error(f"[upload warning] {e}")
         print(f"[upload warning] {e}", flush=True)
