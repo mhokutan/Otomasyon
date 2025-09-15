@@ -2,12 +2,12 @@ name: yt-auto-story
 
 on:
   workflow_dispatch:
-  # Günde 3 kez (UTC 00:00, 08:00, 16:00) — istersen saatleri özelleştir
+  # Günde 3 kez (UTC 00:00, 08:00, 16:00)
   schedule:
     - cron: "0 */8 * * *"
 
 concurrency:
-  group: yt-auto
+  group: yt-auto-${{ matrix.lang }}   # her dil kendi kuyruğunda
   cancel-in-progress: true
 
 jobs:
@@ -75,7 +75,7 @@ jobs:
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
 
-          # --- OpenAI (cheap models) ---
+          # --- OpenAI ---
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: "https://api.openai.com/v1"
           OPENAI_MODEL_CHAT: "gpt-4o-mini"
@@ -89,12 +89,10 @@ jobs:
           TTS_BITRATE: "128k"
 
           # --- Visuals / render ---
-          BG_IMAGES_PER_SLIDE: "4"   # istersen 5-6 yap; hız için 4 iyi
+          BG_IMAGES_PER_SLIDE: "4"
           FPS: "60"
           CRF: "22"
-
-          # Net görseller için timeout/guard
-          ALLOW_NET_BG: "1"          # takılırsa 0 yap
+          ALLOW_NET_BG: "1"
           NET_TIMEOUT: "8"
           MAX_BG_SIZE_MB: "6"
 
@@ -114,15 +112,25 @@ jobs:
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
-          YT_MADE_FOR_KIDS: "false"   # Çocuklar için DEĞİL
+          YT_MADE_FOR_KIDS: "false"
 
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
         run: |
           set -euxo pipefail
           mkdir -p out
-          # log akışı için -u, kilitlenmeye karşı 15 dk timeout
-          timeout 15m python -u src/main.py
+          # 15 dk güvenlik zaman aşımı; logları da artefakta yaz
+          timeout 15m python -u src/main.py 2>&1 | tee "out/run_${{ matrix.lang }}.log"
+
+      - name: Show tree & sizes
+        if: always()
+        run: |
+          echo "::group::Workspace tree"
+          ls -R
+          echo "::endgroup::"
+          echo "::group::Out tree"
+          ls -lah out || true
+          echo "::endgroup::"
 
       - name: Upload artifact (${{ matrix.lang }})
         if: always()
@@ -131,4 +139,4 @@ jobs:
           name: output-story-${{ matrix.lang }}
           path: out/**
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 7  # sen güncelle
