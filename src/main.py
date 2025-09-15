@@ -238,7 +238,15 @@ def main() -> None:
                     "[upload warning] missing required env vars for YouTube upload: " + reason
                 )
             else:
-                privacy = _env("YT_PRIVACY", "public") or "public"
+                privacy = (_env("YT_PRIVACY", "public") or "public").lower().strip()
+                valid_privacy_values = {"public", "private", "unlisted"}
+                if privacy not in valid_privacy_values:
+                    warn_msg = (
+                        f">> YouTube privacy ayarı '{privacy}' geçersiz; 'public' kullanılacak."
+                    )
+                    print(warn_msg, flush=True)
+                    _append_error("[upload warning] invalid YT_PRIVACY value: " + privacy)
+                    privacy = "public"
                 url = try_upload_youtube(
                     mp4_path,
                     title=title,
