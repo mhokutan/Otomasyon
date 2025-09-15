@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os, random, time, urllib.request, tempfile, subprocess, re
+import os, random, time, tempfile, subprocess, re, socket
 from pathlib import Path
 from typing import List, Tuple, Iterable
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+import urllib.request
 
 W, H = 1080, 1920
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -13,11 +14,19 @@ def _env(name: str, default: str) -> str:
     v = os.getenv(name)
     return v if (v is not None and str(v).strip() != "") else default
 
+# ---- Ağ ve işlem zaman aşımları ----
+NET_TIMEOUT = float(_env("NET_TIMEOUT", "8"))       # saniye (tek indirme)
+FFMPEG_TIMEOUT = int(float(_env("FFMPEG_TIMEOUT", "240")))  # saniye (tek ffmpeg çağrısı)
+MAX_BG_SIZE_MB = float(_env("MAX_BG_SIZE_MB", "6")) # tek görsel üst sınır
+USE_UNSPLASH = _env("USE_UNSPLASH", "0").lower() in ("1","true","yes")
+
+socket.setdefaulttimeout(NET_TIMEOUT)
+
 def _ffprobe_duration(path: str) -> float:
     try:
         out = subprocess.run(
             ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",path],
-            check=True, capture_output=True, text=True
+            check=True, capture_output=True, text=True, timeout=30
         ).stdout.strip()
         d = float(out)
         return d if d > 0 else 60.0
@@ -75,7 +84,6 @@ def _sanitize_kw(tokens: Iterable[str]) -> List[str]:
     return out[:5]
 
 _GENRE_MAP = {
-    # EN
     "history": ["history","library","manuscript","ruins","antique","parchment"],
     "mystery": ["mystery","fog","alley","shadow","noir","secret"],
     "horror":  ["horror","abandoned","dark","forest","eerie","gothic"],
@@ -85,7 +93,6 @@ _GENRE_MAP = {
     "space":   ["space","stars","nebula","cosmos","telescope"],
     "nature":  ["nature","forest","mountain","river","mist"],
     "city":    ["city","street","night","architecture","old town"],
-    # TR
     "tarih":   ["tarih","kütüphane","el yazması","arkeoloji","eser"],
     "gizem":   ["gizem","sis","sokak","gölge","sır"],
     "korku":   ["korku","terkedilmiş","karanlık","orman","gotik"],
@@ -95,27 +102,32 @@ _GENRE_MAP = {
     "şehir":   ["şehir","sokak","gece","mimari","eski şehir"],
 }
 
-def _bg_urls_for_theme(theme: str, count: int, keywords=None, genre: str | None = None) -> List[str]:
+def _picsum_urls(count: int) -> List[str]:
     ts = int(time.time())
-    urls: List[str] = []
+    return [f"https://picsum.photos/{W}/{H}?random={ts+i+random.randint(0,99999)}" for i in range(count)]
 
+def _unsplash_urls(count: int, keywords: List[str]) -> List[str]:
+    if not USE_UNSPLASH:
+        return []
+    ts = int(time.time())
+    urls = []
+    for i in range(count):
+        q = ",".join(random.sample(keywords, k=min(2, len(keywords)))) if keywords else "abstract"
+        urls.append(f"https://source.unsplash.com/random/{W}x{H}/?{q}&sig={ts+i}")
+    return urls
+
+def _bg_urls_for_theme(theme: str, count: int, keywords=None, genre: str | None = None) -> List[str]:
     kw_list: List[str] = []
-    # 1) explicit keywords
     if isinstance(keywords, str) and keywords.strip():
         kw_list = _sanitize_kw(re.split(r"[,\s]+", keywords))
     elif isinstance(keywords, (list, tuple)):
         kw_list = _sanitize_kw([str(x) for x in keywords])
-
-    # 2) genre -> map to keywords
     if not kw_list and genre:
         g = genre.strip().lower()
-        # Türkçe/İngilizce eşleşme
         for key, vals in _GENRE_MAP.items():
             if key in g:
                 kw_list = vals[:]
                 break
-
-    # 3) fallback: theme based
     if not kw_list:
         t = (theme or "").lower()
         if t == "crypto":
@@ -125,24 +137,34 @@ def _bg_urls_for_theme(theme: str, count: int, keywords=None, genre: str | None 
         else:
             kw_list = ["history","library","manuscript","mystery","city"]
 
-    # Kaynak karışımı: Picsum (garanti) + Unsplash (konulu)
-    for i in range(max(1, count)):
-        # picsum (garanti yüklenir)
-        urls.append(f"https://picsum.photos/{W}/{H}?random={ts+i+random.randint(0,99999)}")
-        # unsplash (konuya göre)
-        q = ",".join(random.sample(kw_list, k=min(2, len(kw_list)))) if kw_list else "abstract"
-        urls.append(f"https://source.unsplash.com/random/{W}x{H}/?{q}")
-
+    # kaynak karışımı
+    picsum = _picsum_urls(count)
+    unspl  = _unsplash_urls(count, kw_list)
+    urls = picsum + unspl
     random.shuffle(urls)
     return urls[:max(1, count)]
 
 def _download_url(url: str) -> str | None:
     try:
+        # Manuel indirme + timeout + boyut sınırı
+        req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=NET_TIMEOUT) as r:
+            cap = int(MAX_BG_SIZE_MB*1024*1024)
+            data = bytearray()
+            while True:
+                chunk = r.read(64*1024)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > cap:
+                    raise RuntimeError("image too large")
         fd, tmp = tempfile.mkstemp(suffix=".jpg")
         os.close(fd)
-        urllib.request.urlretrieve(url, tmp)
+        with open(tmp, "wb") as f:
+            f.write(data)
         return tmp
-    except Exception:
+    except Exception as e:
+        print(f"[img] skip {url} ({e})")
         return None
 
 def _fit_cover(img: Image.Image, w=W, h=H) -> Image.Image:
@@ -297,6 +319,14 @@ def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: i
     return img.convert("RGB")
 
 # --------------- PNG -> MP4 / concat / mux ---------------
+def _run_ffmpeg(cmd: list[str]):
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=FFMPEG_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("ffmpeg timeout")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffmpeg failed: {e}")
+
 def _png_to_video(png: str, duration: float, out_mp4: str, fps: int=60, zoom_per_sec: float=0.0018):
     d_frames = max(1, int(fps * max(0.5, duration)))
     zpf = max(0.0, float(zoom_per_sec)) / float(fps)
@@ -317,8 +347,9 @@ def _png_to_video(png: str, duration: float, out_mp4: str, fps: int=60, zoom_per
         out_mp4
     ]
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError:
+        _run_ffmpeg(cmd)
+    except Exception as e:
+        print(f"[ffmpeg warn] zoompan fallback ({e})")
         cmd2 = [
             "ffmpeg","-y",
             "-loop","1","-t",f"{max(0.5,duration):.2f}",
@@ -329,7 +360,7 @@ def _png_to_video(png: str, duration: float, out_mp4: str, fps: int=60, zoom_per
             "-pix_fmt","yuv420p","-an","-movflags","+faststart",
             out_mp4
         ]
-        subprocess.run(cmd2, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _run_ffmpeg(cmd2)
 
 def _concat(parts: list[str], out_mp4: str):
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
@@ -337,7 +368,7 @@ def _concat(parts: list[str], out_mp4: str):
             f.write(f"file '{p}'\n")
         lst = f.name
     cmd = ["ffmpeg","-y","-f","concat","-safe","0","-i", lst,"-c","copy", out_mp4]
-    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _run_ffmpeg(cmd)
 
 def _mux(video_mp4: str, audio_mp3: str, out_mp4: str, bitrate="128k"):
     cmd = [
@@ -350,7 +381,7 @@ def _mux(video_mp4: str, audio_mp3: str, out_mp4: str, bitrate="128k"):
         "-shortest","-movflags","+faststart",
         out_mp4
     ]
-    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _run_ffmpeg(cmd)
 
 # --------------- Ana ---------------
 def make_slideshow_video(
@@ -361,12 +392,12 @@ def make_slideshow_video(
     theme: str = "news",
     ticker_text: str | None = None,
     keywords: List[str] | str | None = None,
-    genre: str | None = None,            # <<< YENİ: main.py 'genre=' gönderse de çalışsın
-    **_ignored,                          # <<< YENİ: fazladan gelen argümanları yok say
+    genre: str | None = None,
+    **_ignored,
 ) -> None:
     """
-    captions -> süre paylaştır; her slaytta birden fazla arka plan (keywords/genre/tema ile eşleşen);
-    Ken-Burns efekti; slaytları concat; sesle mux.
+    captions -> süre paylaştır; her slaytta birden fazla arka plan (keywords/genre/tema ile);
+    Ken-Burns efekti; slaytları concat; sesle mux. Ağ/FFmpeg takılmalarına karşı timeout ve fallback’ler var.
     """
     Path("out").mkdir(parents=True, exist_ok=True)
     if not captions:
