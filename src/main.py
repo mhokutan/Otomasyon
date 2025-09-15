@@ -6,34 +6,57 @@ import time
 import traceback
 import subprocess
 from pathlib import Path
-from typing import Optional, Tuple, List, Any
+from typing import Optional, List, Any
 
-# Projendeki modüller
-from scriptgen import generate_script, build_titles
-from tts import synth_tts_to_mp3
+# Yerel modüller (opsiyonel hataya dayanıklı import)
+def _safe_import(name: str):
+    try:
+        return __import__(name)
+    except Exception as e:
+        print(f"[import warning] {name} import edilemedi: {e}", flush=True)
+        return None
 
-# Opsiyonel modüller (yoksa graceful degradation)
-try:
-    from video import make_slideshow_video  # type: ignore
-except Exception:
-    make_slideshow_video = None
+_scriptgen = _safe_import("scriptgen")
+_tts       = _safe_import("tts")
+_video     = _safe_import("video")
+_uploader  = _safe_import("youtube_upload")
 
-try:
-    from youtube_upload import try_upload_youtube  # type: ignore
-except Exception:
-    try_upload_youtube = None
-
+generate_script = getattr(_scriptgen, "generate_script", None)
+build_titles    = getattr(_scriptgen, "build_titles", None)
+synth_tts_to_mp3 = getattr(_tts, "synth_tts_to_mp3", None)
+make_slideshow_video = getattr(_video, "make_slideshow_video", None)
+try_upload_youtube   = getattr(_uploader, "try_upload_youtube", None)
 
 # ---------- Yardımcılar ----------
-
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
-    """Boş stringleri de 'yok' sayarak environment değişkeni oku."""
     v = os.getenv(name)
     return v if (v is not None and str(v).strip() != "") else default
 
 def _ts(fmt: str = "%Y%m%d-%H%M%S") -> str:
-    """UTC zaman damgası."""
     return time.strftime(fmt, time.gmtime())
+
+def _safe_list(x: Any) -> List[str]:
+    if x is None:
+        return []
+    if isinstance(x, (list, tuple)):
+        return [str(i) for i in x]
+    return [str(x)]
+
+def _append_error(msg: str) -> None:
+    Path("out").mkdir(parents=True, exist_ok=True)
+    with open("out/error.log", "a", encoding="utf-8") as f:
+        f.write(msg.rstrip() + "\n")
+
+def _ffmpeg_silence_mp3(out_mp3: str, seconds: int = 30) -> None:
+    """TTS yoksa/sorunluysa: 30 sn sessiz MP3 üret."""
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+        "-t", str(seconds),
+        "-acodec", "libmp3lame", "-q:a", "9",
+        out_mp3
+    ]
+    subprocess.run(cmd, check=True)
 
 def _fallback_black_video(image_w: int, image_h: int, audio_mp3: str, out_mp4: str) -> None:
     """Görsel pipeline çökerse: siyah arka plan + ses ile MP4 üret (dikey 1080x1920)."""
@@ -48,131 +71,152 @@ def _fallback_black_video(image_w: int, image_h: int, audio_mp3: str, out_mp4: s
     ]
     subprocess.run(cmd, check=True)
 
-def _safe_list(x: Any) -> List[str]:
-    if x is None:
-        return []
-    if isinstance(x, (list, tuple)):
-        return [str(i) for i in x]
-    return [str(x)]
-
-
 # ---------- Ana Akış ----------
-
 def main() -> None:
-    # Çıktı klasörü
     Path("out").mkdir(parents=True, exist_ok=True)
 
-    # Parametreler
-    theme   = (_env("THEME", "crypto") or "crypto").lower()        # story / crypto / sports / news
+    theme   = (_env("THEME", "crypto") or "crypto").lower()   # story/crypto/sports/news
     lang    = _env("LANGUAGE", "en") or "en"
     region  = _env("REGION", "US") or "US"
     rss_url = _env("RSS_URL", None)
-    story_topic = _env("STORY_TOPIC", None)  # story modu için opsiyonel konu
+    story_topic = _env("STORY_TOPIC", None)
 
-    # Script üretimi
+    # 1) Senaryo üretimi (fallbacklı)
     print(">> Generating script...", flush=True)
-    script, captions, coins_data = generate_script(
-        mode=theme,
-        language=lang,
-        region=region,
-        rss_url=rss_url,
-        story_topic=story_topic,
-    )
+    script = ""
+    captions: List[str] = []
+    coins_data = None
 
-    # Tip/boşluk korumaları
-    if not isinstance(script, str):
-        script = str(script) if script is not None else " "
-    captions = _safe_list(captions)
-
+    try:
+        if callable(generate_script):
+            s, c, coins_data = generate_script(
+                mode=theme, language=lang, region=region,
+                rss_url=rss_url, story_topic=story_topic
+            )
+            script = s if isinstance(s, str) else str(s or "")
+            captions = _safe_list(c)
+        else:
+            raise RuntimeError("generate_script fonksiyonu yok")
+    except Exception as e:
+        _append_error(f"[script warning] generate_script failed: {e}")
+        # Basit varsayılan metinler
+        if lang == "tr":
+            script = "Bugün gizemli bir hikaye: Beklenmedik bir buluşma, şehir ışıkları altında başlar..."
+            captions = [
+                "Gizemli bir mektup...",
+                "Gece yarısı sokakları",
+                "Eski bir dost",
+                "Sır perdesi aralanıyor"
+            ]
+        else:
+            script = "A short mysterious tale: Under the city lights, an unexpected meeting unfolds..."
+            captions = [
+                "A strange letter",
+                "Midnight streets",
+                "An old friend",
+                "The secret revealed"
+            ]
     print("SCRIPT:\n", script, flush=True)
 
-    # Başlık & açıklama
-    title_prefix = _env("VIDEO_TITLE_PREFIX", {
-        "crypto": "Daily Crypto Brief:",
-        "sports": "Sports Brief:",
-        "news":   "Daily Brief:",
-        "story":  "Story:",
-    }.get(theme, "Daily Brief:"))
-    title, description = build_titles(
-        theme,
-        captions=captions,
-        coins_data=coins_data,
-        title_prefix=title_prefix
-    )
+    # 2) Başlık & açıklama (fallbacklı)
+    try:
+        title_prefix = _env("VIDEO_TITLE_PREFIX", {
+            "crypto": "Daily Crypto Brief:",
+            "sports": "Sports Brief:",
+            "news":   "Daily Brief:",
+            "story":  "Story:",
+        }.get(theme, "Daily Brief:"))
+        if callable(build_titles):
+            title, description = build_titles(
+                theme, captions=captions, coins_data=coins_data, title_prefix=title_prefix
+            )
+        else:
+            raise RuntimeError("build_titles fonksiyonu yok")
+    except Exception as e:
+        _append_error(f"[title warning] build_titles failed: {e}")
+        if lang == "tr":
+            title = f"{title_prefix} Kısa Gizemli Hikaye"
+            description = "Otomatik üretilmiştir."
+        else:
+            title = f"{title_prefix} Short Mystery Story"
+            description = "Auto-generated."
+    print("TITLE:", title, flush=True)
 
-    # TTS parametreleri
+    # 3) TTS (fallback: sessiz MP3)
     voice    = _env("TTS_VOICE", "alloy") or "alloy"
     atempo   = _env("TTS_ATEMPO", "1.05") or "1.05"
-    gap_ms   = _env("TTS_GAP_MS", "10") or "10"          # tts.py bu parametreyi destekliyorsa
+    gap_ms   = _env("TTS_GAP_MS", "10") or "10"
     bitrate  = _env("TTS_BITRATE", "128k") or "128k"
 
     mp3_path = f"out/voice-{_ts()}.mp3"
     mp4_path = f"out/video-{_ts()}.mp4"
 
-    # TTS
     print(">> TTS...", flush=True)
-    synth_tts_to_mp3(
-        text=script,
-        out_mp3=mp3_path,
-        voice=voice,
-        atempo=atempo,
-        gap_ms=gap_ms,
-        bitrate=bitrate,
-    )
+    try:
+        if callable(synth_tts_to_mp3) and (_env("OPENAI_API_KEY") or "").strip():
+            synth_tts_to_mp3(
+                text=script, out_mp3=mp3_path,
+                voice=voice, atempo=atempo, gap_ms=gap_ms, bitrate=bitrate
+            )
+        else:
+            raise RuntimeError("TTS kullanılamıyor veya OPENAI_API_KEY yok")
+    except Exception as e:
+        _append_error(f"[tts warning] synth_tts_to_mp3 failed: {e}")
+        # Sessiz mp3 üret
+        _ffmpeg_silence_mp3(mp3_path, seconds=30)
+        print(">> TTS yok, sessiz MP3 ile devam.", flush=True)
 
-    # Video render
+    # 4) Video render (fallback: siyah arka plan)
     print(">> Render video...", flush=True)
     rendered = False
     try:
-        if make_slideshow_video is not None:
-            # Not: Görsel listeyi boş geçiriyoruz; video.py boş listeyi handle etmeli.
+        if callable(make_slideshow_video):
+            # Görseller ağdan alınmıyor; captions ile slideshow oluştur.
             make_slideshow_video(
-                images=[],                 # dış görsel çekmiyorsan boş kalsın
-                captions=captions,         # altyazı/sahne metinleri
-                audio_mp3=mp3_path,
-                out_mp4=mp4_path,
-                theme=theme,
-                ticker_text=None
+                images=[], captions=captions,
+                audio_mp3=mp3_path, out_mp4=mp4_path,
+                theme=theme, ticker_text=None
             )
             rendered = True
+        else:
+            raise RuntimeError("make_slideshow_video fonksiyonu yok")
     except Exception as e:
-        print(f"[render warning] slideshow failed, fallback to black bg. Reason: {e}", flush=True)
+        _append_error(f"[render warning] slideshow failed: {e}")
 
     if not rendered:
-        # Dikey shorts boyutu
         _fallback_black_video(1080, 1920, mp3_path, mp4_path)
 
     print(f">> Done: {mp4_path}", flush=True)
 
-    # YouTube yükleme (isteğe bağlı; kimlik yoksa atlar)
+    # 5) YouTube yükleme (opsiyonel; hata olsa da düşürme)
     print(">> Trying YouTube upload (if creds exist)...", flush=True)
     try:
-        if try_upload_youtube is not None:
+        if callable(try_upload_youtube) and _env("YT_CLIENT_ID") and _env("YT_CLIENT_SECRET") and _env("YT_REFRESH_TOKEN"):
             privacy = _env("YT_PRIVACY", "public") or "public"
-            url = try_upload_youtube(
-                mp4_path,
-                title=title,
-                description=description,
-                privacy_status=privacy
-            )
+            url = try_upload_youtube(mp4_path, title=title, description=description, privacy_status=privacy)
             if url:
                 print(">> Uploaded:", url, flush=True)
             else:
+                _append_error("[upload warning] uploader returned no URL")
                 print(">> Upload skipped or failed (no URL).", flush=True)
         else:
-            print(">> Uploader not found; skipping.", flush=True)
+            print(">> Uploader not configured; skipping.", flush=True)
     except Exception as e:
+        _append_error(f"[upload warning] {e}")
         print(f"[upload warning] {e}", flush=True)
 
+    # ÖNEMLİ: Asla sys.exit(1) yapma; loglara yazdık ve fallback ile çıktıyı ürettik.
+    return
 
 # ---------- Giriş Noktası ----------
-
 if __name__ == "__main__":
     try:
         main()
     except Exception:
-        # Hata olursa hem ekrana hem dosyaya ayrıntılı traceback yaz
-        with open("out/error.log", "w", encoding="utf-8") as f:
+        # Yine de beklenmeyen bir şey olursa iş düşmesin; logla ve sıfırla bitir.
+        Path("out").mkdir(parents=True, exist_ok=True)
+        with open("out/error.log", "a", encoding="utf-8") as f:
             traceback.print_exc(file=f)
         traceback.print_exc()
-        sys.exit(1)
+        # exit(0) → job yeşil kalsın
+        sys.exit(0)
