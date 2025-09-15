@@ -9,18 +9,30 @@ import subprocess
 from pathlib import Path
 from typing import Optional, List, Any
 
-# Yerel modüller (opsiyonel hataya dayanıklı import)
-def _safe_import(name: str):
-    try:
-        return __import__(name)
-    except Exception as e:
-        print(f"[import warning] {name} import edilemedi: {e}", flush=True)
-        return None
+# Yerel modüller
+try:
+    from . import scriptgen as _scriptgen
+except Exception as exc:  # pragma: no cover - yalnızca import hatası loglanır
+    print(f"[import warning] scriptgen import edilemedi: {exc}", flush=True)
+    _scriptgen = None
 
-_scriptgen = _safe_import("scriptgen")
-_tts       = _safe_import("tts")
-_video     = _safe_import("video")
-_uploader  = _safe_import("youtube_upload")
+try:
+    from . import tts as _tts
+except Exception as exc:  # pragma: no cover - yalnızca import hatası loglanır
+    print(f"[import warning] tts import edilemedi: {exc}", flush=True)
+    _tts = None
+
+try:
+    from . import video as _video
+except Exception as exc:  # pragma: no cover - yalnızca import hatası loglanır
+    print(f"[import warning] video import edilemedi: {exc}", flush=True)
+    _video = None
+
+try:
+    from . import youtube_upload as _uploader
+except Exception as exc:  # pragma: no cover - yalnızca import hatası loglanır
+    print(f"[import warning] youtube_upload import edilemedi: {exc}", flush=True)
+    _uploader = None
 
 generate_script = getattr(_scriptgen, "generate_script", None)
 build_titles    = getattr(_scriptgen, "build_titles", None)
