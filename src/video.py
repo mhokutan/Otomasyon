@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os, random, time, urllib.request, tempfile, subprocess
+import os, random, time, urllib.request, tempfile, subprocess, re
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Iterable
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 W, H = 1080, 1920
@@ -34,9 +34,7 @@ def _theme_colors(theme: str) -> Tuple[Tuple[int,int,int], Tuple[int,int,int], T
     return (18,18,28), (120,0,0), (220,40,40)
 
 def _fallback_bg(theme: str, variant: int = 0) -> Image.Image:
-    """Farklı varyantlar üretip tekdüze görüntüyü önler."""
     c1, c2, c3 = _theme_colors(theme)
-    # varyantla renkleri hafifçe kaydır
     jitter = (variant % 5) * 8
     c1 = tuple(max(0, min(255, x + (-1)**variant * jitter)) for x in c1)
     c2 = tuple(max(0, min(255, x + jitter//2)) for x in c2)
@@ -58,7 +56,6 @@ def _fallback_bg(theme: str, variant: int = 0) -> Image.Image:
     mdr.ellipse([(-W*0.1,-H*0.2),(W*1.1,H*0.8)], fill=180)
     mask = mask.filter(ImageFilter.GaussianBlur(180))
     img  = Image.composite(spot, img, mask)
-    # hafif noise/blur
     px = img.load()
     for _ in range(8000):
         x = random.randint(0, W-1); y = random.randint(0, H-1)
@@ -67,25 +64,47 @@ def _fallback_bg(theme: str, variant: int = 0) -> Image.Image:
     return img.filter(ImageFilter.GaussianBlur(1.0))
 
 # --------------- Görseller (picsum/unsplash) ---------------
-def _bg_urls_for_theme(theme: str, count: int) -> List[str]:
-    """Picsum ve Unsplash random kaynaklarını karıştır."""
+def _sanitize_kw(tokens: Iterable[str]) -> List[str]:
+    out = []
+    for t in tokens:
+        t = t.strip().lower()
+        if not t: continue
+        t = re.sub(r"[^a-z0-9\s\-]", "", t)
+        if len(t) < 3: continue
+        out.append(t)
+    # en fazla 3-5 anahtar kelime
+    return out[:5]
+
+def _bg_urls_for_theme(theme: str, count: int, keywords=None) -> List[str]:
     ts = int(time.time())
     urls: List[str] = []
-    # Basit sorgular
-    t = (theme or "").lower()
-    if t == "crypto":
-        queries = ["finance,charts", "crypto,blockchain", "stock,market"]
-    elif t == "sports":
-        queries = ["sports,stadium", "training,action", "fans,arena"]
-    else:
-        queries = ["news,city", "breaking,newsroom", "world,cityscape"]
 
-    for i in range(count):
-        # picsum (ana)
+    # keywords -> unsplash query
+    kw_list: List[str] = []
+    if isinstance(keywords, str) and keywords.strip():
+        # virgül veya boşlukla ayrılmış olabilir
+        kw_list = _sanitize_kw(re.split(r"[,\s]+", keywords))
+    elif isinstance(keywords, (list, tuple)):
+        kw_list = _sanitize_kw([str(x) for x in keywords])
+
+    # Eğer keywords boşsa, temaya göre makul sorgular
+    if not kw_list:
+        t = (theme or "").lower()
+        if t == "crypto":
+            kw_list = ["crypto", "blockchain", "finance", "charts", "market"]
+        elif t == "sports":
+            kw_list = ["sports", "stadium", "crowd", "arena", "action"]
+        else:
+            kw_list = ["history", "library", "manuscript", "mystery", "city"]
+
+    # Kaynak karışımı: Picsum ve Unsplash
+    for i in range(max(1, count)):
+        # picsum (garanti)
         urls.append(f"https://picsum.photos/{W}/{H}?random={ts+i+random.randint(0,99999)}")
-        # unsplash fallback
-        q = random.choice(queries)
+        # unsplash (konulu)
+        q = ",".join(random.sample(kw_list, k=min(2, len(kw_list)))) if kw_list else "abstract"
         urls.append(f"https://source.unsplash.com/random/{W}x{H}/?{q}")
+
     random.shuffle(urls)
     return urls[:max(1, count)]
 
@@ -136,7 +155,6 @@ def _load_presenter_avatar(size: int) -> Image.Image | None:
         else:
             p = None
         if not p:
-            # Basit placeholder (harfli)
             avatar = Image.new("RGBA", (size, size), (30,30,30,255))
             m = Image.new("L", (size, size), 0)
             ImageDraw.Draw(m).ellipse((0,0,size-1,size-1), fill=255)
@@ -152,7 +170,6 @@ def _load_presenter_avatar(size: int) -> Image.Image | None:
                     txt, font=fnt, fill=(255,255,255,255))
             return avatar
         img = Image.open(p).convert("RGBA").resize((size,size), Image.LANCZOS)
-        # dairesel maske + gölge
         mask = Image.new("L", (size,size), 0)
         ImageDraw.Draw(mask).ellipse((0,0,size-1,size-1), fill=255)
         shadow = Image.new("RGBA", (size+20,size+20), (0,0,0,0))
@@ -172,7 +189,7 @@ def _place_presenter(canvas: Image.Image, avatar: Image.Image, pos: str):
     if avatar is None:
         return
     aw, ah = avatar.size
-    m = 40  # kenar boşluk
+    m = 40
     ticker_h = int(_env("TICKER_H","120"))
     if pos == "bottom-left":
         xy = (m, H - ticker_h - ah - m)
@@ -180,7 +197,7 @@ def _place_presenter(canvas: Image.Image, avatar: Image.Image, pos: str):
         xy = (W - aw - m, H - ticker_h - ah - m)
     elif pos == "top-right":
         xy = (W - aw - m, 220)
-    else:  # top-left
+    else:
         xy = (m, 220)
     canvas.alpha_composite(avatar, xy)
 
@@ -188,17 +205,14 @@ def _place_presenter(canvas: Image.Image, avatar: Image.Image, pos: str):
 def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: int=0) -> Image.Image:
     img = bg.convert("RGBA")
 
-    # Üst şerit
     topbar_h = 160
     topbar = Image.new("RGBA", (W, topbar_h), (0,0,0, int(0.35*255)))
     img.alpha_composite(topbar, (0,60))
 
-    # Alt ticker
     ticker_h = int(_env("TICKER_H","120"))
     bottombar = Image.new("RGBA", (W, ticker_h), (0,0,0, int(0.55*255)))
     img.alpha_composite(bottombar, (0, H - ticker_h))
 
-    # BREAKING bandı (opsiyonel)
     if _env("BREAKING_ON","0").lower() in ("1","true","yes"):
         text = _env("BREAKING_TEXT","BREAKING NEWS")
         try:
@@ -215,15 +229,12 @@ def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: i
         img.alpha_composite(box, (40, 30))
         draw.text((40+padx, 30+pady), text, font=bf, fill=(255,255,255,255))
 
-    # Başlık metni
     try:
         title_font = ImageFont.truetype(FONT_BOLD, 50)
     except Exception:
         title_font = ImageFont.load_default()
     draw = ImageDraw.Draw(img)
-    # merkezli çok satır
-    words = caption or ""
-    # satıra sığdır
+
     def _wrap(drw, text, font, max_w):
         words = (text or "").split()
         if not words: return [""]
@@ -238,7 +249,8 @@ def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: i
                 cur = w
         if cur: lines.append(cur)
         return lines[:3]
-    lines = _wrap(draw, words, title_font, W-120)
+
+    lines = _wrap(draw, caption or "", title_font, W-120)
     y = 90
     for line in lines:
         bb = draw.textbbox((0,0), line, font=title_font, stroke_width=3)
@@ -248,7 +260,6 @@ def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: i
                   stroke_width=3, stroke_fill=(0,0,0,190))
         y += th + 10
 
-    # Spiker
     size = int(_env("PRESENTER_SIZE","260"))
     pos  = _env("PRESENTER_POS","top-right")
     avatar = _load_presenter_avatar(size)
@@ -259,15 +270,9 @@ def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: i
 
 # --------------- PNG -> MP4 / concat / mux ---------------
 def _png_to_video(png: str, duration: float, out_mp4: str, fps: int=60, zoom_per_sec: float=0.0018):
-    """
-    Tek PNG'den Ken-Burns efekti ile kısa bir MP4 üretir.
-    zoom_per_sec: saniyede büyüme miktarı (örn. 0.0018).
-    """
     d_frames = max(1, int(fps * max(0.5, duration)))
-    # frame başına artış
     zpf = max(0.0, float(zoom_per_sec)) / float(fps)
 
-    # Basit filter_complex – yalnızca scale+zoompan+fps
     filter_complex = (
         f"scale={W}:{H},"
         f"zoompan=z='if(lte(on,1),1.0,zoom+{zpf:.6f})':d={d_frames}:s={W}x{H},"
@@ -286,7 +291,6 @@ def _png_to_video(png: str, duration: float, out_mp4: str, fps: int=60, zoom_per
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError:
-        # Zoompan desteklenmezse statik fallback
         cmd2 = [
             "ffmpeg","-y",
             "-loop","1","-t",f"{max(0.5,duration):.2f}",
@@ -308,7 +312,6 @@ def _concat(parts: list[str], out_mp4: str):
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 def _mux(video_mp4: str, audio_mp3: str, out_mp4: str, bitrate="128k"):
-    # YT uyumluluğu için videoyu yeniden encode et +faststart
     cmd = [
         "ffmpeg","-y",
         "-i", video_mp4, "-i", audio_mp3,
@@ -322,13 +325,18 @@ def _mux(video_mp4: str, audio_mp3: str, out_mp4: str, bitrate="128k"):
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 # --------------- Ana ---------------
-def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str, out_mp4: str,
-                         theme: str="news", ticker_text: str|None=None) -> None:
+def make_slideshow_video(
+    images: List[str],
+    captions: List[str],
+    audio_mp3: str,
+    out_mp4: str,
+    theme: str = "news",
+    ticker_text: str | None = None,
+    keywords: List[str] | str | None = None,   # <<< YENİ
+) -> None:
     """
-    Her slayt için çoklu arka plan görseli:
-      - Picsum/Unsplash’tan çekilir (anahtarsız).
-      - Başlık + BREAKING bandı + spiker avatar Pillow ile basılır.
-      - Her arka plan Ken-Burns ile kısa mp4; concat -> slayt; slaytlar concat -> body; body + ses -> final.
+    captions -> süre paylaştır; her slaytta birden fazla arka plan (keywords/tema ile eşleşen);
+    Ken-Burns efekti; slaytları concat; sesle mux.
     """
     Path("out").mkdir(parents=True, exist_ok=True)
     if not captions:
@@ -336,7 +344,6 @@ def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str,
 
     total = _ffprobe_duration(audio_mp3)
 
-    # süre dağıtımı
     lens = [max(1, len(c)) for c in captions]
     total_weight = float(sum(lens)) or 1.0
     min_per = 3.0
@@ -353,7 +360,7 @@ def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str,
     slide_mp4s = []
 
     for i, (cap, sdur) in enumerate(zip(captions, slide_durations), start=1):
-        urls = _bg_urls_for_theme(theme, bgs_per_slide)
+        urls = _bg_urls_for_theme(theme, bgs_per_slide, keywords=keywords)
         parts_for_slide = []
         per_dur = max(1.5, sdur / bgs_per_slide)
 
@@ -388,4 +395,3 @@ def make_slideshow_video(images: List[str], captions: List[str], audio_mp3: str,
     final_out = out_mp4
     _mux(body, audio_mp3, final_out, bitrate=_env("TTS_BITRATE","128k"))
     print(f"[video] DONE -> {final_out}")
-3
