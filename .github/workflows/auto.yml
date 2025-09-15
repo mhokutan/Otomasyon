@@ -2,48 +2,21 @@ name: yt-auto
 
 on:
   workflow_dispatch:
-  # Her 3 saatte bir (00:00, 03:00, 06:00, ...)
+  # Günde 3 kez (UTC): 06:00, 14:00, 22:00
   schedule:
-    - cron: "0 */3 * * *"
+    - cron: "0 6,14,22 * * *"
 
-# Aynı anda farklı tetiklemeler çakışmasın
 concurrency:
-  group: yt-auto
+  group: yt-auto-stories-2lang
   cancel-in-progress: true
 
 jobs:
-  sports-topics:
+  stories-3x-2lang:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     strategy:
-      fail-fast: false
       matrix:
-        include:
-          - id: nfl
-            prefix: "NFL Brief:"
-            rss: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en&q=NFL"
-          - id: college
-            prefix: "College Football Brief:"
-            rss: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en&q=%22college%20football%22"
-          - id: mlb
-            prefix: "MLB Brief:"
-            rss: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en&q=MLB"
-          - id: nhl
-            prefix: "NHL Brief:"
-            rss: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en&q=NHL"
-          - id: basketball
-            prefix: "Basketball Brief:"
-            rss: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en&q=NBA%20OR%20basketball"
-          - id: soccer
-            prefix: "Soccer Brief:"
-            rss: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en&q=soccer"
-
-    # Her konu kendi kuyruğunda çalışsın (aynı konunun üst üste çalışması engellenir)
-    concurrency:
-      group: yt-auto-${{ matrix.id }}
-      cancel-in-progress: true
-
+        LANG: [tr, en]   # <- aynı anda TR ve EN
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,77 +47,74 @@ jobs:
         run: |
           set -e
           if [ -z "${OPENAI_API_KEY_S}${OPENAI_API_KEY_V}" ]; then
-            echo "::error::Missing OPENAI_API_KEY (Secrets or Variables)"
-            exit 1
+            echo "::error::Missing OPENAI_API_KEY (Secrets or Variables)"; exit 1
           fi
           for k in YT_CLIENT_ID_S YT_CLIENT_SECRET_S YT_REFRESH_TOKEN_S; do
             if [ -z "${!k}" ]; then
-              echo "::error::Missing YouTube secret: ${k%_S}"
-              exit 1
+              echo "::error::Missing YouTube secret: ${k%_S}"; exit 1
             fi
           done
           echo "Credentials OK ✅"
 
-      - name: Run generator (${{ matrix.id }})
+      - name: Run generator (STORY • ${{ matrix.LANG }})
         env:
-          # --- İçerik (spor başlıkları RSS) ---
-          THEME: "news"
-          RSS_URL: ${{ matrix.rss }}
-          VIDEO_TITLE_PREFIX: ${{ matrix.prefix }}
-          LANGUAGE: "en"
-          REGION: "US"
+          # --- Content selection ---
+          THEME: "story"
+          LANGUAGE: ${{ matrix.LANG }}
+          REGION: ${{ matrix.LANG == 'tr' && 'TR' || 'US' }}
 
-          # --- OpenAI (ucuz TTS) ---
+          # Hikaye türleri; rastgele seçilir
+          STORY_GENRES: "tarihsel gizem,esrarengiz olay,çözülmemiş korku,paranormal,şehir efsanesi,urban legend,historical mystery,unsolved horror,paranormal tale"
+          STORY_MIN_SEC: "55"
+          STORY_MAX_SEC: "75"
+          STORY_SEED: ""
+
+          # --- OpenAI (ucuz) ---
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: "https://api.openai.com/v1"
-          OPENAI_MODEL_TTS: "gpt-4o-mini-tts"
-          OPENAI_MAX_TOKENS: "400"
-          OPENAI_TEMPERATURE: "0.7"
+          OPENAI_MODEL_CHAT: "gpt-4o-mini"
+          OPENAI_MODEL_TTS:  "gpt-4o-mini-tts"
+          OPENAI_MAX_TOKENS: "600"
+          OPENAI_TEMPERATURE: "0.9"
 
           # --- TTS ---
           TTS_VOICE: "alloy"
-          TTS_ATEMPO: "1.07"
+          TTS_ATEMPO: "1.03"
+          TTS_GAP_MS: "120"
           TTS_BITRATE: "128k"
 
-          # --- Görsel / render ---
-          BG_IMAGES_PER_SLIDE: "5"
+          # --- Görseller / render ---
+          BG_IMAGES_PER_SLIDE: "6"
+          BG_QUERY_MODE: "unsplash"     # unsplash | picsum
           FPS: "60"
           CRF: "22"
 
-          # Breaking banner
-          BREAKING_ON: "1"
-          BREAKING_TEXT: "BREAKING NEWS"
-
-          # Presenter avatar (opsiyonel)
+          # Banner & spiker (opsiyonel)
+          BREAKING_ON: "0"
+          BREAKING_TEXT: "BREAKING"
           PRESENTER_URL: ""
           PRESENTER_POS: "top-right"
-          PRESENTER_SIZE: "260"
+          PRESENTER_SIZE: "240"
           PRESENTER_INITIALS: "AI"
 
-          # Hugging Face opsiyonel (AI resim istiyorsan)
-          HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
-
-          # YouTube upload + Audience
+          # YouTube + COPPA
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
-          YT_MADE_FOR_KIDS: "false"    # Çocuklar için değil
-          # (youtube_upload.py kategoriyi 24/17 sabitliyorsa oradan güncelle)
-          # YT_CATEGORY_ID: "17"        # Sports (destekliyorsan)
+          YT_MADE_FOR_KIDS: "false"
 
           PYTHONIOENCODING: "utf-8"
-          LANG: "en_US.UTF-8"
         run: |
           set -euxo pipefail
           mkdir -p out
           python src/main.py
 
-      - name: Upload artifact (${{ matrix.id }})
+      - name: Upload artifact (${{ matrix.LANG }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: output-${{ matrix.id }}
+          name: output-${{ matrix.LANG }}
           path: out/**
           if-no-files-found: warn
           retention-days: 7
