@@ -69,39 +69,67 @@ def _sanitize_kw(tokens: Iterable[str]) -> List[str]:
     for t in tokens:
         t = t.strip().lower()
         if not t: continue
-        t = re.sub(r"[^a-z0-9\s\-]", "", t)
+        t = re.sub(r"[^a-z0-9çğıöşü\s\-]", "", t)
         if len(t) < 3: continue
         out.append(t)
-    # en fazla 3-5 anahtar kelime
     return out[:5]
 
-def _bg_urls_for_theme(theme: str, count: int, keywords=None) -> List[str]:
+_GENRE_MAP = {
+    # EN
+    "history": ["history","library","manuscript","ruins","antique","parchment"],
+    "mystery": ["mystery","fog","alley","shadow","noir","secret"],
+    "horror":  ["horror","abandoned","dark","forest","eerie","gothic"],
+    "crime":   ["crime","detective","evidence","police","casefile"],
+    "war":     ["war","battlefield","trench","archive","vintage"],
+    "fantasy": ["fantasy","castle","ancient","myth","dragon"],
+    "space":   ["space","stars","nebula","cosmos","telescope"],
+    "nature":  ["nature","forest","mountain","river","mist"],
+    "city":    ["city","street","night","architecture","old town"],
+    # TR
+    "tarih":   ["tarih","kütüphane","el yazması","arkeoloji","eser"],
+    "gizem":   ["gizem","sis","sokak","gölge","sır"],
+    "korku":   ["korku","terkedilmiş","karanlık","orman","gotik"],
+    "suç":     ["suç","dedektif","delil","polis","dosya"],
+    "savaş":   ["savaş","cephe","arşiv","tarihî belge"],
+    "doğa":    ["doğa","orman","dağ","nehir","sis"],
+    "şehir":   ["şehir","sokak","gece","mimari","eski şehir"],
+}
+
+def _bg_urls_for_theme(theme: str, count: int, keywords=None, genre: str | None = None) -> List[str]:
     ts = int(time.time())
     urls: List[str] = []
 
-    # keywords -> unsplash query
     kw_list: List[str] = []
+    # 1) explicit keywords
     if isinstance(keywords, str) and keywords.strip():
-        # virgül veya boşlukla ayrılmış olabilir
         kw_list = _sanitize_kw(re.split(r"[,\s]+", keywords))
     elif isinstance(keywords, (list, tuple)):
         kw_list = _sanitize_kw([str(x) for x in keywords])
 
-    # Eğer keywords boşsa, temaya göre makul sorgular
+    # 2) genre -> map to keywords
+    if not kw_list and genre:
+        g = genre.strip().lower()
+        # Türkçe/İngilizce eşleşme
+        for key, vals in _GENRE_MAP.items():
+            if key in g:
+                kw_list = vals[:]
+                break
+
+    # 3) fallback: theme based
     if not kw_list:
         t = (theme or "").lower()
         if t == "crypto":
-            kw_list = ["crypto", "blockchain", "finance", "charts", "market"]
+            kw_list = ["crypto","blockchain","finance","charts","market"]
         elif t == "sports":
-            kw_list = ["sports", "stadium", "crowd", "arena", "action"]
+            kw_list = ["sports","stadium","crowd","arena","action"]
         else:
-            kw_list = ["history", "library", "manuscript", "mystery", "city"]
+            kw_list = ["history","library","manuscript","mystery","city"]
 
-    # Kaynak karışımı: Picsum ve Unsplash
+    # Kaynak karışımı: Picsum (garanti) + Unsplash (konulu)
     for i in range(max(1, count)):
-        # picsum (garanti)
+        # picsum (garanti yüklenir)
         urls.append(f"https://picsum.photos/{W}/{H}?random={ts+i+random.randint(0,99999)}")
-        # unsplash (konulu)
+        # unsplash (konuya göre)
         q = ",".join(random.sample(kw_list, k=min(2, len(kw_list)))) if kw_list else "abstract"
         urls.append(f"https://source.unsplash.com/random/{W}x{H}/?{q}")
 
@@ -332,10 +360,12 @@ def make_slideshow_video(
     out_mp4: str,
     theme: str = "news",
     ticker_text: str | None = None,
-    keywords: List[str] | str | None = None,   # <<< YENİ
+    keywords: List[str] | str | None = None,
+    genre: str | None = None,            # <<< YENİ: main.py 'genre=' gönderse de çalışsın
+    **_ignored,                          # <<< YENİ: fazladan gelen argümanları yok say
 ) -> None:
     """
-    captions -> süre paylaştır; her slaytta birden fazla arka plan (keywords/tema ile eşleşen);
+    captions -> süre paylaştır; her slaytta birden fazla arka plan (keywords/genre/tema ile eşleşen);
     Ken-Burns efekti; slaytları concat; sesle mux.
     """
     Path("out").mkdir(parents=True, exist_ok=True)
@@ -360,7 +390,7 @@ def make_slideshow_video(
     slide_mp4s = []
 
     for i, (cap, sdur) in enumerate(zip(captions, slide_durations), start=1):
-        urls = _bg_urls_for_theme(theme, bgs_per_slide, keywords=keywords)
+        urls = _bg_urls_for_theme(theme, bgs_per_slide, keywords=keywords, genre=genre)
         parts_for_slide = []
         per_dur = max(1.5, sdur / bgs_per_slide)
 
