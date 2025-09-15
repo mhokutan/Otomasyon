@@ -22,3 +22,5 @@ Optional:
 ## Run
 - Push to `main` or trigger **Actions → yt-auto → Run workflow**.
 - Outputs saved under `out/` and uploaded as artifacts.
+- Optional: set `YT_PRIVACY` to `public`, `unlisted`, or `private` before running the
+  workflow to control the uploaded video's visibility (defaults to `public`).

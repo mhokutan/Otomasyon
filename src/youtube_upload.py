@@ -50,7 +50,7 @@ def try_upload_youtube(
     video_path: str,
     title: str,
     description: str,
-    privacy_status: str = "unlisted",
+    privacy_status: str = "public",
     category_id: str = "22",  # People & Blogs (22) / Entertainment (24)
     tags: Optional[List[str]] = None,
 ) -> Optional[str]:
