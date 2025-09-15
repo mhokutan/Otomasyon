@@ -6,14 +6,15 @@ on:
   schedule:
     - cron: "0 */8 * * *"
 
-concurrency:
-  group: yt-auto-${{ matrix.lang }}   # her dil kendi kuyruğunda
-  cancel-in-progress: true
-
 jobs:
   publish-story:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # concurrency üst seviyede OLMAZ; job seviyesinde olacak:
+    concurrency:
+      group: yt-auto-${{ github.workflow }}-${{ matrix.lang }}
+      cancel-in-progress: true
 
     strategy:
       fail-fast: false
@@ -69,13 +70,11 @@ jobs:
 
       - name: Run generator (STORY • ${{ matrix.lang }})
         env:
-          # --- Content selection (STORY) ---
           THEME: "story"
           LANGUAGE: ${{ matrix.lang }}
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
 
-          # --- OpenAI ---
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: "https://api.openai.com/v1"
           OPENAI_MODEL_CHAT: "gpt-4o-mini"
@@ -83,12 +82,10 @@ jobs:
           OPENAI_MAX_TOKENS: "400"
           OPENAI_TEMPERATURE: "0.7"
 
-          # --- TTS ---
           TTS_VOICE: "alloy"
           TTS_ATEMPO: "1.07"
           TTS_BITRATE: "128k"
 
-          # --- Visuals / render ---
           BG_IMAGES_PER_SLIDE: "4"
           FPS: "60"
           CRF: "22"
@@ -96,7 +93,6 @@ jobs:
           NET_TIMEOUT: "8"
           MAX_BG_SIZE_MB: "6"
 
-          # Banner & Presenter
           BREAKING_ON: "0"
           BREAKING_TEXT: "BREAKING"
           PRESENTER_URL: ""
@@ -104,10 +100,8 @@ jobs:
           PRESENTER_SIZE: "260"
           PRESENTER_INITIALS: "AI"
 
-          # Optional AI images (HF)
           HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
 
-          # YouTube OAuth + Audience
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
@@ -119,7 +113,6 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p out
-          # 15 dk güvenlik zaman aşımı; logları da artefakta yaz
           timeout 15m python -u src/main.py 2>&1 | tee "out/run_${{ matrix.lang }}.log"
 
       - name: Show tree & sizes
@@ -139,4 +132,4 @@ jobs:
           name: output-story-${{ matrix.lang }}
           path: out/**
           if-no-files-found: warn
-          retention-days: 7  # sen güncelle
+          retention-days: 7
