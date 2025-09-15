@@ -4,12 +4,8 @@ import os
 import re
 import tempfile
 import subprocess
-from typing import List, Optional
-
 import requests
-
-
-# ---------------- OpenAI TTS config ----------------
+from typing import List, Optional
 
 def _get(key: str, default: Optional[str] = None) -> Optional[str]:
     v = os.getenv(key)
@@ -19,14 +15,12 @@ def _openai_base_url() -> str:
     return (_get("OPENAI_BASE_URL", "https://api.openai.com/v1") or "https://api.openai.com/v1").rstrip("/")
 
 def _openai_model_tts() -> str:
-    # cheapest default
     return _get("OPENAI_MODEL_TTS", "gpt-4o-mini-tts") or "gpt-4o-mini-tts"
 
 def _openai_tts_segment(text: str, voice: str, out_mp3_path: str) -> None:
     api_key = _get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY missing")
-
     url = f"{_openai_base_url()}/audio/speech"
     payload = {
         "model": _openai_model_tts(),
@@ -39,7 +33,6 @@ def _openai_tts_segment(text: str, voice: str, out_mp3_path: str) -> None:
         "Content-Type": "application/json",
         "Accept": "audio/mpeg",
     }
-
     with requests.post(url, json=payload, headers=headers, stream=True, timeout=120) as r:
         r.raise_for_status()
         with open(out_mp3_path, "wb") as f:
@@ -47,16 +40,8 @@ def _openai_tts_segment(text: str, voice: str, out_mp3_path: str) -> None:
                 if chunk:
                     f.write(chunk)
 
-
-# ---------------- Helpers ----------------
-
 def _split_for_narration(full_text: str) -> List[str]:
-    """
-    Take only spoken lines from the script:
-    lines starting with [HOOK], [CUT], [TIP], [CTA].
-    If none, speak the whole text.
-    """
-    lines: List[str] = []
+    lines = []
     for raw in (full_text or "").splitlines():
         s = raw.strip()
         if not s:
@@ -71,12 +56,9 @@ def _split_for_narration(full_text: str) -> List[str]:
     return lines
 
 def _mk_silence_mp3(seconds: float) -> str:
-    """
-    Create a silent mp3 using ffmpeg.
-    """
     seconds = max(0.0, float(seconds))
     if seconds == 0.0:
-        seconds = 0.001  # practically zero for concat
+        seconds = 0.001
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
     tmp.close()
     cmd = [
@@ -91,9 +73,6 @@ def _mk_silence_mp3(seconds: float) -> str:
     return tmp.name
 
 def _chain_atempo(val: float) -> str:
-    """
-    ffmpeg atempo supports 0.5–2.0. Chain filters to reach other values.
-    """
     val = float(val)
     if 0.5 <= val <= 2.0:
         return f"atempo={val:.3f}"
@@ -110,9 +89,6 @@ def _chain_atempo(val: float) -> str:
     filters.append(f"atempo={current:.3f}")
     return ",".join(filters)
 
-
-# ---------------- Public API ----------------
-
 def synth_tts_to_mp3(
     text: str,
     out_mp3: str,
@@ -121,9 +97,6 @@ def synth_tts_to_mp3(
     gap_ms: int | str = 0,
     bitrate: str = "128k",
 ) -> None:
-    """
-    text -> split segments -> OpenAI TTS -> insert silence (gap_ms) -> concat -> apply atempo & bitrate
-    """
     os.makedirs(os.path.dirname(out_mp3) or ".", exist_ok=True)
 
     try:
@@ -135,57 +108,4 @@ def synth_tts_to_mp3(
         gap_ms_val = int(gap_ms) if isinstance(gap_ms, str) else int(gap_ms)
     except Exception:
         gap_ms_val = 0
-    gap_sec = max(0.0, gap_ms_val / 1000.0)
-
-    segments = _split_for_narration(text)
-    tmp_parts: List[str] = []
-
-    # TTS segments
-    for seg in segments:
-        seg_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-        seg_file.close()
-        _openai_tts_segment(seg, voice, seg_file.name)
-        tmp_parts.append(seg_file.name)
-        if gap_sec > 0:
-            tmp_parts.append(_mk_silence_mp3(gap_sec))
-
-    # drop trailing silence if any
-    if len(tmp_parts) >= 2 and gap_sec > 0:
-        last = tmp_parts[-1]
-        try:
-            # naive: if last file length is near zero, it is likely our silence; remove
-            # (we simply remove the last item we added as silence)
-            os.remove(last)
-        except Exception:
-            pass
-        tmp_parts = tmp_parts[:-1]
-
-    # concat list file
-    concat_list = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8")
-    for p in tmp_parts:
-        concat_list.write(f"file '{p}'\n")
-    concat_list.close()
-
-    combined = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-    combined.close()
-
-    # 1) lossless concat
-    cmd_concat = [
-        "ffmpeg", "-y",
-        "-f", "concat", "-safe", "0",
-        "-i", concat_list.name,
-        "-c", "copy",
-        combined.name
-    ]
-    subprocess.run(cmd_concat, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-    # 2) apply speed & bitrate
-    atempo_filter = _chain_atempo(atempo_val)
-    cmd_final = [
-        "ffmpeg", "-y",
-        "-i", combined.name,
-        "-filter:a", atempo_filter,
-        "-b:a", bitrate,
-        out_mp3
-    ]
-    subprocess.run(cmd_final, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    gap_sec = max(0.0, gap_ms_val / 1000.0
