@@ -475,11 +475,25 @@ def make_slideshow_video(
             parts_for_slide.append(part_mp4)
 
         slide_body = f"/tmp/slide_body_{i}.mp4"
-        _concat(parts_for_slide, slide_body)
-        slide_mp4s.append(slide_body)
+        try:
+            _concat(parts_for_slide, slide_body)
+            slide_mp4s.append(slide_body)
+        finally:
+            for part_mp4 in parts_for_slide:
+                try:
+                    os.remove(part_mp4)
+                except OSError:
+                    pass
 
     body = "/tmp/body.mp4"
-    _concat(slide_mp4s, body)
+    try:
+        _concat(slide_mp4s, body)
+    finally:
+        for slide_body in slide_mp4s:
+            try:
+                os.remove(slide_body)
+            except OSError:
+                pass
 
     final_out = out_mp4
     _mux(body, audio_mp3, final_out, bitrate=_env("TTS_BITRATE","128k"))
