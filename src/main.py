@@ -181,8 +181,9 @@ def main() -> None:
     gap_ms   = _env("TTS_GAP_MS", "10") or "10"
     bitrate  = _env("TTS_BITRATE", "128k") or "128k"
 
-    mp3_path = f"out/voice-{_ts()}.mp3"
-    mp4_path = f"out/video-{_ts()}.mp4"
+    ts = _ts()
+    mp3_path = f"out/voice-{ts}.mp3"
+    mp4_path = f"out/video-{ts}.mp4"
 
     print(">> TTS...", flush=True)
     try:
