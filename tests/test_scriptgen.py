@@ -43,3 +43,41 @@ def test_generate_script_crypto_fallback(monkeypatch):
     assert "no data" in script.lower()
     assert captions == ["60-second crypto brief (no data)"]
     assert coins_data == {}
+
+
+def test_build_titles_with_coin_rows(monkeypatch):
+    coin_rows = [
+        {"coin": "solana", "usd": "150", "usd_24h_change": "-2.1"},
+        {"id": "bitcoin", "usd": "50000", "usd_24h_change": "1.5"},
+        {"id": "", "usd": "0", "usd_24h_change": "0"},  # ignored row
+    ]
+    # Ensure build_titles respects the CRYPTO_COINS order while skipping
+    # coins not present in the rows (ethereum is missing) and ignoring invalid
+    # rows.
+    monkeypatch.setenv("CRYPTO_COINS", "ethereum,bitcoin,solana")
+
+    result = scriptgen.build_titles(mode="crypto", coin_rows=coin_rows)
+
+    assert isinstance(result, list)
+    assert result == [
+        "BITCOIN: $50,000.00 | 24h +1.50%",
+        "SOLANA: $150.00 | 24h -2.10%",
+    ]
+
+
+def test_build_titles_with_headlines():
+    headlines = [
+        (f"Breaking News {i}", f"https://example.com/{i}") for i in range(1, 7)
+    ]
+
+    result = scriptgen.build_titles(mode="news", headlines=headlines)
+
+    assert isinstance(result, list)
+    # Only the first five headlines should be used for captions
+    assert result == [
+        "Breaking News 1",
+        "Breaking News 2",
+        "Breaking News 3",
+        "Breaking News 4",
+        "Breaking News 5",
+    ]
