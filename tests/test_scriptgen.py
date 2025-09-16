@@ -43,3 +43,36 @@ def test_generate_script_crypto_fallback(monkeypatch):
     assert "no data" in script.lower()
     assert captions == ["60-second crypto brief (no data)"]
     assert coins_data == {}
+
+
+def test_build_titles_with_coin_rows(monkeypatch):
+    coin_rows = [
+        {"id": "solana", "usd": 150, "usd_24h_change": -2.1},
+        {"id": "bitcoin", "usd": 50000, "usd_24h_change": 1.5},
+    ]
+    monkeypatch.setenv("CRYPTO_COINS", "bitcoin,solana")
+
+    result = scriptgen.build_titles(mode="crypto", coin_rows=coin_rows)
+
+    assert isinstance(result, list)
+    assert result == [
+        "BITCOIN: $50,000.00 | 24h +1.50%",
+        "SOLANA: $150.00 | 24h -2.10%",
+    ]
+
+
+def test_build_titles_with_headlines():
+    headlines = [
+        ("Breaking News One", "https://example.com/1"),
+        ("Breaking News Two", "https://example.com/2"),
+        ("Breaking News Three", "https://example.com/3"),
+    ]
+
+    result = scriptgen.build_titles(mode="news", headlines=headlines)
+
+    assert isinstance(result, list)
+    assert result == [
+        "Breaking News One",
+        "Breaking News Two",
+        "Breaking News Three",
+    ]
