@@ -6,12 +6,12 @@ from typing import Optional, List, Dict, Any
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
 SCOPES: List[str] = [
     "https://www.googleapis.com/auth/youtube.upload",
-    "https://www.googleapis.com/auth/youtube.readonly",
 ]
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -22,6 +22,13 @@ def _get_bool_env(name: str, default: bool=False) -> bool:
     v=_env(name)
     return default if v is None else str(v).strip().lower() in ("1","true","yes","on")
 
+def _configured_scopes() -> List[str]:
+    raw = _env("YT_SCOPES")
+    if raw is None:
+        return SCOPES
+    scopes = [part.strip() for part in raw.split(",") if part.strip()]
+    return scopes or SCOPES
+
 def _dump_json(path: str, obj: Any) -> None:
     os.makedirs("out", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -31,11 +38,37 @@ def _creds() -> Credentials:
     cid=_env("YT_CLIENT_ID"); csec=_env("YT_CLIENT_SECRET"); rtok=_env("YT_REFRESH_TOKEN")
     if not (cid and csec and rtok):
         raise RuntimeError("YouTube OAuth bilgileri eksik (YT_CLIENT_ID/SECRET/REFRESH_TOKEN).")
+    scopes = _configured_scopes()
     cred = Credentials(
         None, refresh_token=rtok, token_uri="https://oauth2.googleapis.com/token",
-        client_id=cid, client_secret=csec, scopes=SCOPES
+        client_id=cid, client_secret=csec, scopes=scopes
     )
-    cred.refresh(Request())
+    try:
+        cred.refresh(Request())
+    except RefreshError as exc:
+        error_payload: Dict[str, Any] = {"error": str(exc)}
+        response = getattr(exc, "response", None)
+        if response is not None:
+            status_code = getattr(response, "status", None)
+            if status_code is None:
+                status_code = getattr(response, "status_code", None)
+            if status_code is not None:
+                error_payload["status_code"] = status_code
+            body: Optional[Any] = None
+            try:
+                body = response.json()
+            except Exception:
+                text = getattr(response, "text", None)
+                if text is None:
+                    content = getattr(response, "content", None)
+                    if isinstance(content, bytes):
+                        text = content.decode("utf-8", errors="replace")
+                if text is not None:
+                    error_payload["response_text"] = text
+            else:
+                error_payload["response"] = body
+        _dump_json("out/youtube_error.json", error_payload)
+        raise RuntimeError("YouTube OAuth token refresh failed; see out/youtube_error.json") from exc
     return cred
 
 def _who_am_i(youtube) -> Dict[str, Any]:
