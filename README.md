@@ -34,7 +34,8 @@ Optional:
 - `TTS_ATEMPO` (e.g. `1.07`)  
 - `BG_IMAGES_PER_SLIDE` (e.g. `5`)  
 - `PRESENTER_URL`, `PRESENTER_INITIALS`, `PRESENTER_POS`, `PRESENTER_SIZE`  
-- `BREAKING_ON`, `BREAKING_TEXT`  
+- `BREAKING_ON`, `BREAKING_TEXT`
+- `YT_DEBUG` → when `1/true`, saves channel metadata to `out/youtube_me.json` for troubleshooting; leave unset to avoid storing personal channel details.
 
 ## Run
 - Push to `main` or trigger **Actions → yt-auto → Run workflow**.
