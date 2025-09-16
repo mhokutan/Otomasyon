@@ -17,15 +17,13 @@
      - `https://www.googleapis.com/auth/youtube.upload`
      - `https://www.googleapis.com/auth/youtube.readonly`
 
-     Install `google-auth-oauthlib` locally (`pip install google-auth-oauthlib`) and run once to create credentials with those scopes:
+     After installing the dependencies (or at least `google-auth-oauthlib`), run the helper script once to authorize the desktop app and print a refresh token:
 
      ```bash
-     python -m google_auth_oauthlib.tool \
-       --client-secrets=client_secret.json \
-       --scopes="https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
+     python scripts/gen_refresh_token.py --client-secrets path/to/client_secret.json
      ```
 
-     The tool stores a `refresh_token` in the generated credentials file; copy that value into the `YT_REFRESH_TOKEN` secret. The refresh token must be issued for the exact scopes listed above—if you change `YT_SCOPES`, you must reauthorize and store a new refresh token.
+     Pass `--scopes` if you override `YT_SCOPES` in the workflow. The script prints the token to stdout—copy it into the `YT_REFRESH_TOKEN` secret. Generating a new refresh token revokes any older tokens for the same OAuth client and user, so update any automations that still reference the previous value.
 
 Optional:
 - `HF_TOKEN` (not required; images are pulled from picsum.photos instead)
@@ -36,6 +34,7 @@ Optional:
 - `PRESENTER_URL`, `PRESENTER_INITIALS`, `PRESENTER_POS`, `PRESENTER_SIZE`  
 - `BREAKING_ON`, `BREAKING_TEXT`
 - `YT_DEBUG` → when `1/true`, saves channel metadata to `out/youtube_me.json` for troubleshooting; leave unset to avoid storing personal channel details.
+- `YT_VALIDATE_TOKEN` → when `1/true`, validates the refresh token up front and skips the workflow if the token is invalid.
 
 ## Run
 - Push to `main` or trigger **Actions → yt-auto → Run workflow**.

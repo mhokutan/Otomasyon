@@ -45,6 +45,12 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     v = os.getenv(name)
     return v if (v is not None and str(v).strip() != "") else default
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = _env(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
 def _ts(fmt: str = "%Y%m%d-%H%M%S") -> str:
     return time.strftime(fmt, time.gmtime())
 
@@ -107,6 +113,31 @@ def _fallback_black_video(image_w: int, image_h: int, audio_mp3: str, out_mp4: s
 # ---------- Ana Akış ----------
 def main() -> None:
     Path("out").mkdir(parents=True, exist_ok=True)
+
+    if _env_bool("YT_VALIDATE_TOKEN", False):
+        validator = getattr(_uploader, "validate_refresh_token", None)
+        if callable(validator):
+            print(">> Validating YouTube refresh token...", flush=True)
+            try:
+                ok = bool(validator())
+            except Exception as e:
+                _append_error(f"[auth warning] refresh token validation failed: {e}")
+                print(
+                    ">> YouTube refresh token validation failed; see out/error.log for details.",
+                    flush=True,
+                )
+                return
+            if not ok:
+                _append_error("[auth warning] refresh token validation returned False")
+                print(
+                    ">> YouTube refresh token validation failed (False result).", flush=True
+                )
+                return
+        else:
+            print(
+                ">> YT_VALIDATE_TOKEN is set but validate_refresh_token() is unavailable; continuing.",
+                flush=True,
+            )
 
     theme   = (_env("THEME", "crypto") or "crypto").lower()   # story/crypto/sports/news
     lang    = _env("LANGUAGE", "en") or "en"
