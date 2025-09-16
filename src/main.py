@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
+import importlib
 import os
 import json
 import sys
@@ -9,30 +10,32 @@ import subprocess
 from pathlib import Path
 from typing import Optional, List, Any
 
-# Yerel modüller
-try:
-    from . import scriptgen as _scriptgen
-except Exception as exc:  # pragma: no cover - yalnızca import hatası loglanır
-    print(f"[import warning] scriptgen import edilemedi: {exc}", flush=True)
-    _scriptgen = None
 
-try:
-    from . import tts as _tts
-except Exception as exc:  # pragma: no cover - yalnızca import hatası loglanır
-    print(f"[import warning] tts import edilemedi: {exc}", flush=True)
-    _tts = None
+def _load_local_module(name: str):
+    """Load a sibling module regardless of how this file is executed."""
 
-try:
-    from . import video as _video
-except Exception as exc:  # pragma: no cover - yalnızca import hatası loglanır
-    print(f"[import warning] video import edilemedi: {exc}", flush=True)
-    _video = None
+    relative_exc: Exception | None = None
+    if __package__:
+        try:
+            return importlib.import_module(f".{name}", __package__)
+        except Exception as exc:  # pragma: no cover - yalnızca hata kayıt için
+            relative_exc = exc
 
-try:
-    from . import youtube_upload as _uploader
-except Exception as exc:  # pragma: no cover - yalnızca import hatası loglanır
-    print(f"[import warning] youtube_upload import edilemedi: {exc}", flush=True)
-    _uploader = None
+    try:
+        return importlib.import_module(name)
+    except Exception as exc:  # pragma: no cover - yalnızca import hatası loglanır
+        if relative_exc and str(relative_exc) != str(exc):
+            detail = f"{exc} (relative import failed: {relative_exc})"
+        else:
+            detail = str(relative_exc or exc)
+        print(f"[import warning] {name} import edilemedi: {detail}", flush=True)
+        return None
+
+
+_scriptgen = _load_local_module("scriptgen")
+_tts = _load_local_module("tts")
+_video = _load_local_module("video")
+_uploader = _load_local_module("youtube_upload")
 
 generate_script = getattr(_scriptgen, "generate_script", None)
 build_titles    = getattr(_scriptgen, "build_titles", None)
