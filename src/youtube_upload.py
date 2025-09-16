@@ -10,13 +10,14 @@ from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
+try:  # pragma: no cover - doğrudan çağırma desteği
+    from .utils.env import _env
+except ImportError:  # pragma: no cover - fallback
+    from utils.env import _env  # type: ignore
+
 SCOPES: List[str] = [
     "https://www.googleapis.com/auth/youtube.upload",
 ]
-
-def _env(name: str, default: Optional[str] = None) -> Optional[str]:
-    v = os.getenv(name)
-    return v if (v is not None and str(v).strip() != "") else default
 
 def _get_bool_env(name: str, default: bool=False) -> bool:
     v=_env(name)

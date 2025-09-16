@@ -7,13 +7,14 @@ from typing import List, Tuple, Iterable, Optional
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import urllib.request
 
+try:  # pragma: no cover - doğrudan çağırma desteği
+    from .utils.env import _env
+except ImportError:  # pragma: no cover - fallback
+    from utils.env import _env  # type: ignore
+
 W, H = 1080, 1920
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_REG  = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-
-def _env(name: str, default: str) -> str:
-    v = os.getenv(name)
-    return v if (v is not None and str(v).strip() != "") else default
 
 # ---- Ağ ve işlem zaman aşımları ----
 NET_TIMEOUT = float(_env("NET_TIMEOUT", "8"))       # saniye (tek indirme)

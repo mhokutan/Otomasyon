@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os
 import json
 import sys
 import time
@@ -8,6 +7,12 @@ import traceback
 import subprocess
 from pathlib import Path
 from typing import Optional, List, Any
+
+# Ortak yardımcılar
+try:  # pragma: no cover - doğrudan çalıştırma için
+    from .utils.env import _env
+except ImportError:  # pragma: no cover - fallback
+    from utils.env import _env  # type: ignore
 
 # Yerel modüller
 try:
@@ -41,10 +46,6 @@ make_slideshow_video = getattr(_video, "make_slideshow_video", None)
 try_upload_youtube   = getattr(_uploader, "try_upload_youtube", None)
 
 # ---------- Yardımcılar ----------
-def _env(name: str, default: Optional[str] = None) -> Optional[str]:
-    v = os.getenv(name)
-    return v if (v is not None and str(v).strip() != "") else default
-
 def _ts(fmt: str = "%Y%m%d-%H%M%S") -> str:
     return time.strftime(fmt, time.gmtime())
 

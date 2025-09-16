@@ -34,10 +34,10 @@ except Exception:
 
 import xml.etree.ElementTree as ET
 
-
-def _env(name: str, default: Optional[str] = None) -> Optional[str]:
-    v = os.getenv(name)
-    return v if (v is not None and str(v).strip() != "") else default
+try:  # pragma: no cover - doğrudan çağırma desteği
+    from .utils.env import _env
+except ImportError:  # pragma: no cover - fallback
+    from utils.env import _env  # type: ignore
 
 def _fmt_usd(x: float) -> str:
     return f"${x:,.2f}"
