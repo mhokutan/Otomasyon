@@ -10,10 +10,6 @@ from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
-SCOPES: List[str] = [
-    "https://www.googleapis.com/auth/youtube.upload",
-]
-
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     v = os.getenv(name)
     return v if (v is not None and str(v).strip() != "") else default
@@ -21,6 +17,12 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
 def _get_bool_env(name: str, default: bool=False) -> bool:
     v=_env(name)
     return default if v is None else str(v).strip().lower() in ("1","true","yes","on")
+
+SCOPES: List[str] = [
+    "https://www.googleapis.com/auth/youtube.upload",
+]
+
+YT_DEBUG: bool = _get_bool_env("YT_DEBUG", False)
 
 def _configured_scopes() -> List[str]:
     raw = _env("YT_SCOPES")
@@ -73,7 +75,8 @@ def _creds() -> Credentials:
 
 def _who_am_i(youtube) -> Dict[str, Any]:
     ch = youtube.channels().list(part="snippet,contentDetails,statistics", mine=True).execute()
-    _dump_json("out/youtube_me.json", ch)
+    if YT_DEBUG:
+        _dump_json("out/youtube_me.json", ch)
     return ch
 
 def _check_video_status(youtube, video_id: str) -> Dict[str, Any]:
@@ -97,12 +100,13 @@ def try_upload_youtube(
     creds = _creds()
     youtube = build("youtube", "v3", credentials=creds)
 
-    # Kim hangi kanala yüklüyor → kayda geçir
-    try:
-        me = _who_am_i(youtube)
-        print("[upload] channel info written to out/youtube_me.json", flush=True)
-    except Exception as e:
-        _dump_json("out/youtube_me_error.json", {"error": str(e)})
+    if YT_DEBUG:
+        # Kim hangi kanala yüklüyor → kayda geçir (debug modunda)
+        try:
+            _who_am_i(youtube)
+            print("[upload] channel info written to out/youtube_me.json", flush=True)
+        except Exception as e:
+            _dump_json("out/youtube_me_error.json", {"error": str(e)})
 
     body = {
         "snippet": {
