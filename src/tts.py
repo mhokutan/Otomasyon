@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 import os
 import re
 import shutil
@@ -18,6 +19,20 @@ def _openai_base_url() -> str:
 
 def _openai_model_tts() -> str:
     return _get("OPENAI_MODEL_TTS", "gpt-4o-mini-tts") or "gpt-4o-mini-tts"
+
+def _tts_force_sequential() -> bool:
+    val = (_get("OPENAI_TTS_SEQUENTIAL") or "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+def _tts_max_workers(default: int = 4) -> int:
+    raw = _get("OPENAI_TTS_MAX_WORKERS")
+    if raw is None:
+        return max(1, int(default))
+    try:
+        workers = int(str(raw).strip())
+        return max(1, workers)
+    except Exception:
+        return max(1, int(default))
 
 def _openai_tts_segment(text: str, voice: str, out_mp3_path: str) -> None:
     api_key = _get("OPENAI_API_KEY")
@@ -107,6 +122,10 @@ def synth_tts_to_mp3(
     logical narration chunks, request speech for each chunk, optionally insert
     configurable gaps, and finally stitch the pieces together while applying
     the requested tempo and bitrate.
+
+    Concurrency is enabled by default; set ``OPENAI_TTS_SEQUENTIAL`` to a
+    truthy value to fall back to sequential synthesis, or tune
+    ``OPENAI_TTS_MAX_WORKERS`` to control the pool size.
     """
 
     os.makedirs(os.path.dirname(out_mp3) or ".", exist_ok=True)
@@ -133,12 +152,34 @@ def synth_tts_to_mp3(
 
     with tempfile.TemporaryDirectory(prefix="tts_") as tmpdir:
         concat_entries: List[Path] = []
-        for idx, line in enumerate(narration_lines):
-            seg_path = Path(tmpdir) / f"seg_{idx:03d}.mp3"
-            _openai_tts_segment(line, voice, seg_path.as_posix())
+        segment_paths = [Path(tmpdir) / f"seg_{idx:03d}.mp3" for idx in range(len(narration_lines))]
+
+        use_pool = not _tts_force_sequential() and len(narration_lines) > 1
+        max_workers = min(len(narration_lines), _tts_max_workers()) if narration_lines else 1
+        if max_workers <= 1:
+            use_pool = False
+
+        if use_pool:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        _openai_tts_segment,
+                        narration_lines[idx],
+                        voice,
+                        segment_paths[idx].as_posix(),
+                    )
+                    for idx in range(len(narration_lines))
+                ]
+                for future in futures:
+                    future.result()
+        else:
+            for idx, line in enumerate(narration_lines):
+                _openai_tts_segment(line, voice, segment_paths[idx].as_posix())
+
+        for idx, seg_path in enumerate(segment_paths):
             concat_entries.append(seg_path)
 
-            if silence_mp3 and idx < len(narration_lines) - 1:
+            if silence_mp3 and idx < len(segment_paths) - 1:
                 gap_path = Path(tmpdir) / f"gap_{idx:03d}.mp3"
                 shutil.copy(silence_mp3, gap_path)
                 concat_entries.append(gap_path)
