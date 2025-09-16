@@ -274,6 +274,7 @@ def main() -> None:
     except Exception as e:
         _append_error(f"[upload warning] {e}")
         print(f"[upload warning] {e}", flush=True)
+        _print_youtube_error_summary()
 
     # ÖNEMLİ: Asla sys.exit(1) yapma; loglara yazdık ve fallback ile çıktıyı ürettik.
     return
