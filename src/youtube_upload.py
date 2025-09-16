@@ -76,6 +76,14 @@ def _creds() -> Credentials:
         raise RuntimeError("YouTube OAuth token refresh failed; see out/youtube_error.json") from exc
     return cred
 
+
+def validate_refresh_token() -> bool:
+    """Refresh the stored credentials and confirm the refresh token is usable."""
+    creds = _creds()
+    if not creds.valid:
+        raise RuntimeError("YouTube OAuth credentials are not valid after refresh.")
+    return True
+
 def _who_am_i(youtube) -> Dict[str, Any]:
     ch = youtube.channels().list(part="snippet,contentDetails,statistics", mine=True).execute()
     if YT_DEBUG:
