@@ -18,8 +18,11 @@ def _get_bool_env(name: str, default: bool=False) -> bool:
     v=_env(name)
     return default if v is None else str(v).strip().lower() in ("1","true","yes","on")
 
+# Default scopes allow uploads and basic read access so we can fetch
+# channel metadata/status during debug checks.
 SCOPES: List[str] = [
     "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
 ]
 
 YT_DEBUG: bool = _get_bool_env("YT_DEBUG", False)

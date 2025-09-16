@@ -13,7 +13,7 @@
   2. With that project selected, go to **APIs & Services → Library**, search for **YouTube Data API v3**, and press **Enable**.
   3. Open **APIs & Services → Credentials → Create Credentials → OAuth client ID**. If prompted, configure the OAuth consent screen (external, add the YouTube scopes below). Choose **Desktop App** as the application type and finish the wizard.
   4. Download the OAuth client JSON and copy the `client_id`/`client_secret` values into the repository/workflow secrets `YT_CLIENT_ID` and `YT_CLIENT_SECRET`.
-  5. Generate a refresh token using exactly the same scopes as the app uses. The required scopes (`YT_SCOPES` in the code) are:
+  5. Generate a refresh token using exactly the same scopes as the app uses. The defaults (`YT_SCOPES` in the code) request upload and read access:
      - `https://www.googleapis.com/auth/youtube.upload`
      - `https://www.googleapis.com/auth/youtube.readonly`
 
