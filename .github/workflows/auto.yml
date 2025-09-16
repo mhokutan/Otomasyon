@@ -100,7 +100,7 @@ jobs:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_ID || vars.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET != '' && secrets.YT_CLIENT_SECRET || vars.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN != '' && secrets.YT_REFRESH_TOKEN || vars.YT_REFRESH_TOKEN }}
-          YT_PRIVACY: "unlisted"   # önce liste dışı dene
+          YT_PRIVACY: "public"   # varsayılan herkese açık
           YT_MADE_FOR_KIDS: "false"
 
           PYTHONIOENCODING: "utf-8"
