@@ -264,7 +264,13 @@ def _place_presenter(canvas: Image.Image, avatar: Image.Image, pos: str):
     canvas.alpha_composite(avatar, xy)
 
 # --------------- Kompozit: caption + banner + spiker ---------------
-def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: int=0) -> Image.Image:
+def _compose_caption(
+    bg: Image.Image,
+    caption: str,
+    theme: str,
+    blink_variant: int=0,
+    avatar: Image.Image | None = None,
+) -> Image.Image:
     img = bg.convert("RGBA")
 
     topbar_h = 160
@@ -324,9 +330,9 @@ def _compose_caption(bg: Image.Image, caption: str, theme: str, blink_variant: i
 
     size = int(_env("PRESENTER_SIZE","260"))
     pos  = _env("PRESENTER_POS","top-right")
-    avatar = _load_presenter_avatar(size)
-    if avatar:
-        _place_presenter(img, avatar, pos)
+    presenter = avatar if avatar is not None else _load_presenter_avatar(size)
+    if presenter:
+        _place_presenter(img, presenter, pos)
 
     return img.convert("RGB")
 
@@ -430,6 +436,9 @@ def make_slideshow_video(
     bgs_per_slide = max(1, min(10, bgs_per_slide))
     zoom_per_sec = float(_env("BG_ZOOM_PER_SEC","0.0018"))
 
+    presenter_size = int(_env("PRESENTER_SIZE","260"))
+    presenter_avatar = _load_presenter_avatar(presenter_size)
+
     slide_mp4s = []
 
     for i, (cap, sdur) in enumerate(zip(captions, slide_durations), start=1):
@@ -455,7 +464,7 @@ def make_slideshow_video(
                 img = _fallback_bg(theme, variant=j)
 
             img = _fit_cover(img, W, H).filter(ImageFilter.GaussianBlur(radius=0.6))
-            frame = _compose_caption(img, cap, theme, blink_variant=j)
+            frame = _compose_caption(img, cap, theme, blink_variant=j, avatar=presenter_avatar)
 
             out_png = Path("out") / f"slide_{i:02d}_{j:02d}.png"
             frame.save(out_png.as_posix(), "PNG", optimize=True)
