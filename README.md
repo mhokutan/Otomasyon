@@ -42,3 +42,12 @@ Optional:
 - Outputs saved under `out/` and uploaded as artifacts.
 - Optional: set `YT_PRIVACY` to `public`, `unlisted`, or `private` before running the
   workflow to control the uploaded video's visibility (defaults to `public`).
+
+## Tests
+
+Install dependencies (including pytest) and run the suite:
+
+```bash
+pip install -r requirements.txt
+pytest
+```
