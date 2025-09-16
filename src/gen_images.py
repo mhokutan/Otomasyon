@@ -1,5 +1,8 @@
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import random
+import logging
+
+logger = logging.getLogger(__name__)
 
 W, H = 1080, 1920
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -40,7 +43,8 @@ def build_images_for_items(titles, out_dir, prefix="news"):
             f_big = ImageFont.truetype(FONT, size=58)
             f_tag = ImageFont.truetype(FONT, size=40)
             f_water = ImageFont.truetype(FONT, size=160)
-        except:
+        except OSError as exc:
+            logger.warning("Failed to load font '%s': %s", FONT, exc)
             f_big = f_tag = f_water = ImageFont.load_default()
 
         # büyük "NEWS" watermark
