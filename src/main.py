@@ -160,9 +160,25 @@ def main() -> None:
             "story":  "Story:",
         }.get(theme, "Daily Brief:"))
         if callable(build_titles):
-            title, description = build_titles(
-                theme, captions=captions, coins_data=coins_data, title_prefix=title_prefix
+            title_meta = build_titles(
+                theme,
+                captions=captions,
+                coins_data=coins_data,
+                title_prefix=title_prefix,
             )
+            if hasattr(title_meta, "as_tuple") and callable(getattr(title_meta, "as_tuple")):
+                title, description = title_meta.as_tuple()
+            elif isinstance(title_meta, tuple) and len(title_meta) >= 2:
+                title, description = title_meta[:2]
+            elif isinstance(title_meta, dict):
+                title = title_meta.get("title")
+                description = title_meta.get("description")
+            else:
+                title = getattr(title_meta, "title", None)
+                description = getattr(title_meta, "description", None)
+
+            if not isinstance(title, str) or not isinstance(description, str):
+                raise TypeError("build_titles beklenmedik çıktı")
         else:
             raise RuntimeError("build_titles fonksiyonu yok")
     except Exception as e:
