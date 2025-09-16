@@ -14,13 +14,18 @@ SCOPES: List[str] = [
     "https://www.googleapis.com/auth/youtube.upload",
 ]
 
+
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     v = os.getenv(name)
     return v if (v is not None and str(v).strip() != "") else default
 
-def _get_bool_env(name: str, default: bool=False) -> bool:
-    v=_env(name)
-    return default if v is None else str(v).strip().lower() in ("1","true","yes","on")
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    v = _env(name)
+    return (
+        default if v is None else str(v).strip().lower() in ("1", "true", "yes", "on")
+    )
+
 
 def _configured_scopes() -> List[str]:
     raw = _env("YT_SCOPES")
@@ -29,19 +34,29 @@ def _configured_scopes() -> List[str]:
     scopes = [part.strip() for part in raw.split(",") if part.strip()]
     return scopes or SCOPES
 
+
 def _dump_json(path: str, obj: Any) -> None:
     os.makedirs("out", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
+
 def _creds() -> Credentials:
-    cid=_env("YT_CLIENT_ID"); csec=_env("YT_CLIENT_SECRET"); rtok=_env("YT_REFRESH_TOKEN")
+    cid = _env("YT_CLIENT_ID")
+    csec = _env("YT_CLIENT_SECRET")
+    rtok = _env("YT_REFRESH_TOKEN")
     if not (cid and csec and rtok):
-        raise RuntimeError("YouTube OAuth bilgileri eksik (YT_CLIENT_ID/SECRET/REFRESH_TOKEN).")
+        raise RuntimeError(
+            "YouTube OAuth bilgileri eksik (YT_CLIENT_ID/SECRET/REFRESH_TOKEN)."
+        )
     scopes = _configured_scopes()
     cred = Credentials(
-        None, refresh_token=rtok, token_uri="https://oauth2.googleapis.com/token",
-        client_id=cid, client_secret=csec, scopes=scopes
+        None,
+        refresh_token=rtok,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=cid,
+        client_secret=csec,
+        scopes=scopes,
     )
     try:
         cred.refresh(Request())
@@ -68,19 +83,28 @@ def _creds() -> Credentials:
             else:
                 error_payload["response"] = body
         _dump_json("out/youtube_error.json", error_payload)
-        raise RuntimeError("YouTube OAuth token refresh failed; see out/youtube_error.json") from exc
+        raise RuntimeError(
+            "YouTube OAuth token refresh failed; see out/youtube_error.json"
+        ) from exc
     return cred
 
+
 def _who_am_i(youtube) -> Dict[str, Any]:
-    ch = youtube.channels().list(part="snippet,contentDetails,statistics", mine=True).execute()
+    ch = (
+        youtube.channels()
+        .list(part="snippet,contentDetails,statistics", mine=True)
+        .execute()
+    )
     _dump_json("out/youtube_me.json", ch)
     return ch
+
 
 def _check_video_status(youtube, video_id: str) -> Dict[str, Any]:
     # uploadStatus / privacyStatus vs. kontrol
     info = youtube.videos().list(part="status,snippet", id=video_id).execute()
     _dump_json("out/youtube_status.json", info)
     return info
+
 
 def try_upload_youtube(
     video_path: str,
@@ -111,18 +135,26 @@ def try_upload_youtube(
             "categoryId": category_id,
         },
         "status": {
-            "privacyStatus": privacy_status if privacy_status in {"public","private","unlisted"} else "unlisted",
+            "privacyStatus": (
+                privacy_status
+                if privacy_status in {"public", "private", "unlisted"}
+                else "unlisted"
+            ),
             "selfDeclaredMadeForKids": _get_bool_env("YT_MADE_FOR_KIDS", False),
-        }
+        },
     }
     if tags:
         body["snippet"]["tags"] = tags
 
     mimetype, _ = mimetypes.guess_type(str(vp))
-    media = MediaFileUpload(str(vp), mimetype=mimetype or "video/mp4", chunksize=1024*1024, resumable=True)
+    media = MediaFileUpload(
+        str(vp), mimetype=mimetype or "video/mp4", chunksize=1024 * 1024, resumable=True
+    )
 
     try:
-        request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+        request = youtube.videos().insert(
+            part="snippet,status", body=body, media_body=media
+        )
         response = None
         while response is None:
             status, response = request.next_chunk()
@@ -139,15 +171,20 @@ def try_upload_youtube(
         try:
             for _ in range(5):  # ~1 dakikada birkaç kez kontrol
                 st = _check_video_status(youtube, vid)
-                s = ((st.get("items") or [{}])[0].get("status") or {})
+                s = (st.get("items") or [{}])[0].get("status") or {}
                 us = s.get("uploadStatus")
                 ps = s.get("privacyStatus")
-                print(f"[upload] status check: uploadStatus={us}, privacy={ps}", flush=True)
+                print(
+                    f"[upload] status check: uploadStatus={us}, privacy={ps}",
+                    flush=True,
+                )
                 if us in {"processed", "uploaded"}:
                     break
                 time.sleep(10)
         except Exception as e:
-            _dump_json("out/youtube_status_error.json", {"error": str(e), "videoId": vid})
+            _dump_json(
+                "out/youtube_status_error.json", {"error": str(e), "videoId": vid}
+            )
 
         url = f"https://youtu.be/{vid}"
         print("[upload] tamamlandı:", url, flush=True)
