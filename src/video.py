@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 import os, random, time, tempfile, subprocess, re, socket
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Tuple, Iterable
+from typing import List, Tuple, Iterable, Optional
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import urllib.request
 
@@ -166,6 +167,17 @@ def _download_url(url: str) -> str | None:
     except Exception as e:
         print(f"[img] skip {url} ({e})")
         return None
+
+def _download_many(urls: List[str]) -> List[Optional[str]]:
+    if not urls:
+        return []
+    try:
+        max_workers = int(_env("IMG_DL_WORKERS", "4") or "4")
+    except Exception:
+        max_workers = 4
+    max_workers = max(1, min(len(urls), max_workers))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(_download_url, urls))
 
 def _fit_cover(img: Image.Image, w=W, h=H) -> Image.Image:
     iw, ih = img.size
@@ -425,13 +437,20 @@ def make_slideshow_video(
         parts_for_slide = []
         per_dur = max(1.5, sdur / bgs_per_slide)
 
-        for j, url in enumerate(urls, start=1):
-            f = _download_url(url)
+        downloaded = _download_many(urls)
+
+        for j, (url, f) in enumerate(zip(urls, downloaded), start=1):
             if f:
                 try:
-                    img = Image.open(f).convert("RGB")
+                    with Image.open(f) as raw:
+                        img = raw.convert("RGB")
                 except Exception:
                     img = _fallback_bg(theme, variant=j)
+                finally:
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
             else:
                 img = _fallback_bg(theme, variant=j)
 

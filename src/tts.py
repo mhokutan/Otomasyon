@@ -2,8 +2,10 @@
 from __future__ import annotations
 import os
 import re
+import shutil
 import tempfile
 import subprocess
+from pathlib import Path
 import requests
 from typing import List, Optional
 
@@ -97,6 +99,16 @@ def synth_tts_to_mp3(
     gap_ms: int | str = 0,
     bitrate: str = "128k",
 ) -> None:
+    """Generate a narration MP3 using OpenAI TTS.
+
+    The historical implementation in this repository stopped halfway through,
+    which meant the workflow always fell back to the silent MP3 generation.
+    This implementation restores the intended behaviour: split the script into
+    logical narration chunks, request speech for each chunk, optionally insert
+    configurable gaps, and finally stitch the pieces together while applying
+    the requested tempo and bitrate.
+    """
+
     os.makedirs(os.path.dirname(out_mp3) or ".", exist_ok=True)
 
     try:
@@ -108,4 +120,62 @@ def synth_tts_to_mp3(
         gap_ms_val = int(gap_ms) if isinstance(gap_ms, str) else int(gap_ms)
     except Exception:
         gap_ms_val = 0
-    gap_sec = max(0.0, gap_ms_val / 1000.0
+    gap_sec = max(0.0, gap_ms_val / 1000.0)
+
+    narration_lines = [ln.strip() for ln in _split_for_narration(text) if ln.strip()]
+    if not narration_lines:
+        narration_lines = [text.strip() or " "]
+
+    # Prepare silence clip once if we need inter-line gaps.
+    silence_mp3: str | None = None
+    if gap_sec > 0:
+        silence_mp3 = _mk_silence_mp3(gap_sec)
+
+    with tempfile.TemporaryDirectory(prefix="tts_") as tmpdir:
+        concat_entries: List[Path] = []
+        for idx, line in enumerate(narration_lines):
+            seg_path = Path(tmpdir) / f"seg_{idx:03d}.mp3"
+            _openai_tts_segment(line, voice, seg_path.as_posix())
+            concat_entries.append(seg_path)
+
+            if silence_mp3 and idx < len(narration_lines) - 1:
+                gap_path = Path(tmpdir) / f"gap_{idx:03d}.mp3"
+                shutil.copy(silence_mp3, gap_path)
+                concat_entries.append(gap_path)
+
+        if not concat_entries:
+            # Shouldn't happen because we guard above, but keep a hard fallback.
+            fallback_silence = _mk_silence_mp3(max(1.0, gap_sec))
+            concat_entries.append(Path(fallback_silence))
+
+        concat_list = Path(tmpdir) / "list.txt"
+        with concat_list.open("w", encoding="utf-8") as f:
+            for item in concat_entries:
+                f.write(f"file '{item.as_posix()}'\n")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list.as_posix(),
+            "-vn",
+        ]
+
+        filters: List[str] = []
+        if abs(atempo_val - 1.0) > 1e-3:
+            filters.append(_chain_atempo(atempo_val))
+        if filters:
+            cmd.extend(["-af", ",".join(filters)])
+
+        cmd.extend([
+            "-c:a", "libmp3lame",
+            "-b:a", bitrate,
+            out_mp3,
+        ])
+
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    if silence_mp3:
+        try:
+            os.unlink(silence_mp3)
+        except OSError:
+            pass
