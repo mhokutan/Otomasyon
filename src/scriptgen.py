@@ -24,6 +24,8 @@ import time
 import textwrap
 from typing import List, Tuple, Dict, Optional, Any
 
+import logging
+
 import requests
 
 try:
@@ -33,6 +35,9 @@ except Exception:
     _HAS_FEEDPARSER = False
 
 import xml.etree.ElementTree as ET
+
+
+logger = logging.getLogger(__name__)
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -127,7 +132,11 @@ def make_script_crypto(coins_data: Dict[str, Dict[str, float]], language: str = 
 def _rss_top_titles(url: str, n: int = 3) -> List[Tuple[str, str]]:
     titles: List[Tuple[str, str]] = []
     if _HAS_FEEDPARSER:
-        feed = feedparser.parse(url)
+        try:
+            feed = feedparser.parse(url)
+        except Exception as exc:  # pragma: no cover - feedparser robustness
+            logger.warning("RSS feedparser failed for %s: %s", url, exc)
+            return titles
         for e in _safe_first(getattr(feed, "entries", []), n):
             t = _clean_text(getattr(e, "title", "") or "")
             l = getattr(e, "link", "") or ""
@@ -135,9 +144,18 @@ def _rss_top_titles(url: str, n: int = 3) -> List[Tuple[str, str]]:
                 titles.append((t, l))
         return titles
 
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    root = ET.fromstring(r.content)
+    try:
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("RSS request failed for %s: %s", url, exc)
+        return titles
+
+    try:
+        root = ET.fromstring(r.content)
+    except ET.ParseError as exc:
+        logger.warning("RSS XML parse failed for %s: %s", url, exc)
+        return titles
 
     for item in root.findall(".//item"):
         t = _clean_text(item.findtext("title") or "")
