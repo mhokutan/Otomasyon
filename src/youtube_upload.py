@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 import os, json, mimetypes, pathlib, time
+import re
 from typing import Optional, List, Dict, Any
 
 from googleapiclient.discovery import build
@@ -31,7 +32,10 @@ def _configured_scopes() -> List[str]:
     raw = _env("YT_SCOPES")
     if raw is None:
         return SCOPES
-    scopes = [part.strip() for part in raw.split(",") if part.strip()]
+    # Allow comma or whitespace separated scopes so users can copy the same
+    # values they pass to the helper script (``--scopes scope1 scope2``).
+    tokens = re.split(r"[,\s]+", raw)
+    scopes = [part.strip() for part in tokens if part.strip()]
     return scopes or SCOPES
 
 def _dump_json(path: str, obj: Any) -> None:
