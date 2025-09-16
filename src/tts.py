@@ -6,6 +6,7 @@ import re
 import shutil
 import tempfile
 import subprocess
+import time
 from pathlib import Path
 import requests
 from typing import List, Optional
@@ -50,12 +51,32 @@ def _openai_tts_segment(text: str, voice: str, out_mp3_path: str) -> None:
         "Content-Type": "application/json",
         "Accept": "audio/mpeg",
     }
-    with requests.post(url, json=payload, headers=headers, stream=True, timeout=120) as r:
-        r.raise_for_status()
-        with open(out_mp3_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+    attempts = 3
+    last_exc: requests.RequestException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                stream=True,
+                timeout=120,
+            ) as r:
+                r.raise_for_status()
+                with open(out_mp3_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+            return
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            backoff = min(60, 2 ** (attempt - 1))
+            time.sleep(backoff)
+
+    error_msg = f"Failed to synthesize TTS after {attempts} attempts: {last_exc}"
+    raise RuntimeError(error_msg) from last_exc
 
 def _split_for_narration(full_text: str) -> List[str]:
     lines = []
