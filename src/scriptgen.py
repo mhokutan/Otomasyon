@@ -9,8 +9,9 @@ Exposed functions:
 
 - build_titles(mode, captions=None, coins_data=None, title_prefix=None,
                coin_rows=None, headlines=None, **ignored)
-    -> If coin_rows or headlines is provided: returns a captions LIST (compat).
-       Else (classic usage with captions): returns (title, description) TUPLE.
+    -> Returns a TitleMetadata object with `title`, `description`, `captions`.
+       When only captions are generated (coin_rows/headlines), `title` and
+       `description` will be ``None``.
 
 - fetch_trends_tr(n=3)
 - make_script_tr(headlines)
@@ -22,7 +23,8 @@ from __future__ import annotations
 import os
 import time
 import textwrap
-from typing import List, Tuple, Dict, Optional, Any
+from dataclasses import dataclass, field
+from typing import List, Tuple, Dict, Optional, Any, Iterator
 
 import logging
 
@@ -250,6 +252,27 @@ def make_script_story(topic: Optional[str], language: str="en") -> Tuple[str, Li
 
 # ------------------ Titles / Descriptions ------------------
 
+@dataclass
+class TitleMetadata:
+    title: Optional[str] = None
+    description: Optional[str] = None
+    captions: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.captions is None:
+            self.captions = []
+        elif isinstance(self.captions, str):
+            self.captions = [str(self.captions)]
+        else:
+            self.captions = [str(c) for c in list(self.captions)]
+
+    def as_tuple(self) -> Tuple[Optional[str], Optional[str]]:
+        return self.title, self.description
+
+    def __iter__(self) -> Iterator[Optional[str]]:
+        return iter(self.as_tuple())
+
+
 def _coins_from_rows(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
     out: Dict[str, Dict[str, float]] = {}
     for r in rows or []:
@@ -270,22 +293,25 @@ def build_titles(mode: str,
                  title_prefix: Optional[str] = None,
                  coin_rows: Optional[List[Dict[str, Any]]] = None,
                  headlines: Optional[List[Tuple[str, str]]] = None,
-                 **ignored: Any):
+                 **ignored: Any) -> TitleMetadata:
     mode_l = (mode or "").lower()
 
     if coin_rows is not None:
         data = _coins_from_rows(coin_rows)
         if not data:
-            return []
+            return TitleMetadata(captions=[])
         order_env = _env("CRYPTO_COINS", "bitcoin,ethereum,solana")
         order = [c.strip() for c in (order_env or "").split(",") if c.strip()]
         ordered = [c for c in order if c in data] or list(data.keys())
-        caps = [f"{cid.upper()}: {_fmt_usd(data[cid]['usd'])} | 24h {_fmt_pct(data[cid]['usd_24h_change'])}"
-                for cid in ordered]
-        return caps
+        caps = [
+            f"{cid.upper()}: {_fmt_usd(data[cid]['usd'])} | 24h {_fmt_pct(data[cid]['usd_24h_change'])}"
+            for cid in ordered
+        ]
+        return TitleMetadata(captions=caps)
 
     if headlines is not None:
-        return [t for (t, _link) in (headlines[:5] if headlines else [])]
+        caps = [t for (t, _link) in (headlines[:5] if headlines else [])]
+        return TitleMetadata(captions=caps)
 
     ts = _now_ts()
     if not title_prefix:
@@ -296,7 +322,14 @@ def build_titles(mode: str,
             "story": "Story:"
         }.get(mode_l, "Daily Brief:")
 
-    main_part = (captions[0] if captions else
+    if captions is None:
+        provided_captions: List[str] = []
+    elif isinstance(captions, str):
+        provided_captions = [str(captions)]
+    else:
+        provided_captions = [str(c) for c in list(captions)]
+
+    main_part = (provided_captions[0] if provided_captions else
                  ("Crypto market update" if mode_l == "crypto" else
                   ("A short story" if mode_l == "story" else "Top headlines")))
     title = f"{title_prefix} {main_part}"
@@ -322,7 +355,7 @@ def build_titles(mode: str,
             #crypto #bitcoin #ethereum #solana #ai #shorts
         """).strip()
     else:
-        bullets = "\n".join([f"- {c}" for c in _safe_first(captions or [], 5)])
+        bullets = "\n".join([f"- {c}" for c in _safe_first(provided_captions, 5)])
         desc = textwrap.dedent(f"""\
             Auto-generated {mode_l or 'news'} video — {ts}
 
@@ -337,7 +370,7 @@ def build_titles(mode: str,
             #news #sports #story #ai #shorts
         """).strip()
 
-    return title, desc
+    return TitleMetadata(title=title, description=desc, captions=provided_captions)
 
 
 # ------------------ Orchestrator ------------------
@@ -400,8 +433,15 @@ if __name__ == "__main__":
         rss_url=os.getenv("RSS_URL"),
         story_topic=os.getenv("STORY_TOPIC"),
     )
-    title, desc = build_titles(md, captions=caps, coins_data=coins_data, title_prefix=os.getenv("VIDEO_TITLE_PREFIX"))
+    meta = build_titles(
+        md,
+        captions=caps,
+        coins_data=coins_data,
+        title_prefix=os.getenv("VIDEO_TITLE_PREFIX"),
+    )
     print("SCRIPT:\n", script)
     print("\nCAPTIONS:", caps)
-    print("\nTITLE:", title)
-    print("\nDESC:\n", desc)
+    print("\nTITLE:", meta.title)
+    print("\nDESC:\n", meta.description)
+    if meta.captions:
+        print("\nTITLE CAPTIONS:", meta.captions)
