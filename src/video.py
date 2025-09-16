@@ -146,25 +146,30 @@ def _bg_urls_for_theme(theme: str, count: int, keywords=None, genre: str | None 
     return urls[:max(1, count)]
 
 def _download_url(url: str) -> str | None:
+    tmp_path: str | None = None
     try:
         # Manuel indirme + timeout + boyut sınırı
         req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=NET_TIMEOUT) as r:
             cap = int(MAX_BG_SIZE_MB*1024*1024)
-            data = bytearray()
-            while True:
-                chunk = r.read(64*1024)
-                if not chunk:
-                    break
-                data.extend(chunk)
-                if len(data) > cap:
-                    raise RuntimeError("image too large")
-        fd, tmp = tempfile.mkstemp(suffix=".jpg")
-        os.close(fd)
-        with open(tmp, "wb") as f:
-            f.write(data)
-        return tmp
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+                tmp_path = tmp_file.name
+                total = 0
+                while True:
+                    chunk = r.read(64*1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > cap:
+                        raise RuntimeError("image too large")
+                    tmp_file.write(chunk)
+        return tmp_path
     except Exception as e:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
         print(f"[img] skip {url} ({e})")
         return None
 
