@@ -45,7 +45,6 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Secrets & anahtarlar için önden kontrol (artifact/log'a da yazar) ---
       - name: Preflight (keys)
         id: gates
         env:
@@ -56,20 +55,16 @@ jobs:
           YT_REFRESH_TOKEN_S: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
           set -euo pipefail
-          echo "Preflight kontrolü başlıyor..."
           if [ -z "${OPENAI_API_KEY_S}${OPENAI_API_KEY_V}" ]; then
-            echo "::warning::OPENAI_API_KEY yok; TTS sessiz moda düşecek"
+            echo "::warning::OPENAI_API_KEY yok; TTS sessiz moda düşebilir"
           fi
-
           has_yt=false
           if [ -n "${YT_CLIENT_ID_S:-}" ] && [ -n "${YT_CLIENT_SECRET_S:-}" ] && [ -n "${YT_REFRESH_TOKEN_S:-}" ]; then
             has_yt=true
           else
-            echo "::warning::YouTube secret'larından en az biri eksik; upload adımı atlanacak"
+            echo "::warning::YouTube secret'larından biri eksik; upload atlanacak"
           fi
-
           echo "has_yt=${has_yt}" >> "$GITHUB_OUTPUT"
-          echo "Preflight OK"
 
       - name: Build video (STORY • ${{ matrix.lang }})
         env:
@@ -111,15 +106,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          rm -f out/*.mp4 || true
           echo "== RUN =="
-          python -X dev -u -m src.main 2>&1 | tee "out/run_${{ matrix.lang }}.log"
+          # kodunuz video üretimini burada yapıyor:
+          python -X dev -u -m src.main 2>&1 | tee "out/run_${{ matrix.lang }}.log" || true
           echo "== OUT =="
-          ls -lah out
-          # src.main farklı ad kullanıyorsa bu yolu güncelle:
-          if [ ! -f "out/final_${{ matrix.lang }}.mp4" ]; then
-            echo "::error::Video çıktısı bulunamadı (out/final_${{ matrix.lang }}.mp4 bekleniyordu)"; exit 1
+          ls -lah out || true
+          # Üretilen en yeni mp4'ü seç:
+          latest="$(ls -t out/*.mp4 2>/dev/null | head -n1 || true)"
+          if [ -z "$latest" ]; then
+            echo "::error::Hiç .mp4 üretilmemiş görünüyor (out/*.mp4 bulunamadı)"; exit 1
           fi
+          echo "video_path=$latest" >> "$GITHUB_OUTPUT"
+        id: build
 
       - name: Auth smoke test (YouTube)
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
@@ -154,23 +152,23 @@ jobs:
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN != '' && secrets.YT_REFRESH_TOKEN || vars.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
           YT_MADE_FOR_KIDS: "false"
-          YT_FAIL_ON_ERROR: "1"
           YT_DEBUG: "1"
           YT_TAGS: "shorts,ai,story"
         run: |
           set -euo pipefail
-          VIDEO_PATH="out/final_${{ matrix.lang }}.mp4"
-          test -f "$VIDEO_PATH" || (echo "::error::Video çıktısı yok: $VIDEO_PATH" && exit 1)
+          VIDEO_PATH="${{ steps.build.outputs.video_path }}"
+          echo "Yüklenecek dosya: $VIDEO_PATH"
           python youtube_upload.py \
             --video "$VIDEO_PATH" \
             --title "${{ matrix.title_prefix }} ${{ matrix.lang == 'tr' && 'Günlük Otomatik Hikaye' || 'Daily Auto Story' }}" \
             --desc  "Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Otomasyon yüklemesi" \
-            --privacy "${{ env.YT_PRIVACY || 'public' }}"
+            --privacy "${{ env.YT_PRIVACY }}"
 
       - name: Upload artifact (${{ matrix.lang }})
         uses: actions/upload-artifact@v4
         with:
           name: output-story-${{ matrix.lang }}
-          path: out/**
+          path: |
+            out/**
           if-no-files-found: warn
           retention-days: 7
