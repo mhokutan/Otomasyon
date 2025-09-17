@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os, json, mimetypes, pathlib, time, sys
-import re
+import os, json, mimetypes, pathlib, time, argparse, re
 from typing import Optional, List, Dict, Any
 
 from googleapiclient.discovery import build
@@ -28,20 +27,54 @@ def _get_float_env(name: str, default: float) -> float:
     except Exception:
         return default
 
-SCOPES: List[str] = [
+# ---- Scopes ---------------------------------------------------------------
+
+# Desteklenen kapsamlar
+VALID_SCOPES = {
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
-]
+}
+
+# Kısa ad → tam URL eşlemesi (isteğe bağlı kullanım için)
+SHORT_TO_FULL = {
+    "youtube.upload": "https://www.googleapis.com/auth/youtube.upload",
+    "youtube.readonly": "https://www.googleapis.com/auth/youtube.readonly",
+    "upload": "https://www.googleapis.com/auth/youtube.upload",
+    "readonly": "https://www.googleapis.com/auth/youtube.readonly",
+}
+
+# Varsayılan: sadece upload — böylece readonly izni olmayan tokenlarda invalid_scope olmaz
+DEFAULT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 YT_DEBUG: bool = _get_bool_env("YT_DEBUG", False)
+
+def _normalize_scopes(tokens: List[str]) -> List[str]:
+    out = []
+    for t in tokens:
+        t = t.strip()
+        if not t:
+            continue
+        if t in SHORT_TO_FULL:
+            t = SHORT_TO_FULL[t]
+        if t.startswith("https://www.googleapis.com/auth/"):
+            out.append(t)
+    out = [s for s in out if s in VALID_SCOPES]
+    return out or DEFAULT_SCOPES[:]
 
 def _configured_scopes() -> List[str]:
     raw = _env("YT_SCOPES")
     if raw is None:
-        return SCOPES
-    tokens = re.split(r"[,\s]+", raw)
-    scopes = [part.strip() for part in tokens if part.strip()]
-    return scopes or SCOPES
+        scopes = DEFAULT_SCOPES[:]
+    else:
+        tokens = re.split(r"[,\s]+", raw)
+        scopes = _normalize_scopes(tokens)
+    try:
+        _dump_json("out/youtube_scopes.json", {"scopes": scopes, "from_env": raw is not None})
+    except Exception:
+        pass
+    return scopes
+
+# ---- Utils ----------------------------------------------------------------
 
 def _dump_json(path: str, obj: Any) -> None:
     os.makedirs("out", exist_ok=True)
@@ -52,6 +85,7 @@ def _creds() -> Credentials:
     cid=_env("YT_CLIENT_ID"); csec=_env("YT_CLIENT_SECRET"); rtok=_env("YT_REFRESH_TOKEN")
     if not (cid and csec and rtok):
         raise RuntimeError("YouTube OAuth bilgileri eksik (YT_CLIENT_ID/SECRET/REFRESH_TOKEN).")
+
     scopes = _configured_scopes()
     cred = Credentials(
         None, refresh_token=rtok, token_uri="https://oauth2.googleapis.com/token",
@@ -82,10 +116,20 @@ def _creds() -> Credentials:
             else:
                 error_payload["response"] = body
         _dump_json("out/youtube_error.json", error_payload)
-        raise RuntimeError("YouTube OAuth token refresh failed; see out/youtube_error.json") from exc
+
+        msg = "YouTube OAuth token refresh failed"
+        if "invalid_scope" in str(exc).lower() or (
+            isinstance(error_payload.get("response"), dict)
+            and error_payload["response"].get("error") == "invalid_scope"
+        ):
+            msg += (" (invalid_scope). YT_SCOPES env değişkenini kaldır ya da yalnızca geçerli kapsamları "
+                    "tam URL ile belirt; refresh token’ı aynı scope setiyle üretmelisin. "
+                    "Detay: out/youtube_scopes.json")
+        raise RuntimeError(msg) from exc
     return cred
 
 def validate_refresh_token() -> bool:
+    """Refresh token’ı yenileyip kullanılabilir olduğunu doğrular."""
     creds = _creds()
     if not creds.valid:
         raise RuntimeError("YouTube OAuth credentials are not valid after refresh.")
@@ -107,7 +151,7 @@ def try_upload_youtube(
     title: str,
     description: str,
     privacy_status: str = "public",
-    category_id: str = "22",
+    category_id: str = "22",  # People & Blogs
     tags: Optional[List[str]] = None,
 ) -> Optional[str]:
     vp = pathlib.Path(video_path)
@@ -139,7 +183,8 @@ def try_upload_youtube(
         body["snippet"]["tags"] = tags
 
     mimetype, _ = mimetypes.guess_type(str(vp))
-    media = MediaFileUpload(str(vp), mimetype=mimetype or "video/mp4", chunksize=1024*1024, resumable=True)
+    media = MediaFileUpload(str(vp), mimetype=mimetype or "video/mp4",
+                            chunksize=1024*1024, resumable=True)
 
     try:
         request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
@@ -160,12 +205,19 @@ def try_upload_youtube(
             made_progress = False
 
             if status is not None:
+                # yüzde log
                 progress_fn = getattr(status, "progress", None)
                 if callable(progress_fn):
                     try:
                         raw_fraction = progress_fn()
-                        if raw_fraction is not None:
+                    except Exception:
+                        raw_fraction = None
+                    if raw_fraction is not None:
+                        try:
                             current_fraction = float(raw_fraction)
+                        except Exception:
+                            current_fraction = None
+                        else:
                             current_fraction = max(0.0, min(1.0, current_fraction))
                             if current_fraction > last_progress_fraction + 1e-6:
                                 last_progress_fraction = current_fraction
@@ -174,8 +226,6 @@ def try_upload_youtube(
                             if percent_int != last_logged_percent:
                                 print(f"[upload] progress: {percent_int}%", flush=True)
                                 last_logged_percent = percent_int
-                    except Exception:
-                        pass
 
                 bytes_progress = getattr(status, "resumable_progress", None)
                 if isinstance(bytes_progress, (int, float)):
@@ -197,7 +247,8 @@ def try_upload_youtube(
                         f"Upload stalled: no progress for {int(max_idle_seconds)} seconds ({detail})."
                     )
 
-            if (now - start_time) >= max_total_seconds:
+            elapsed = now - start_time
+            if elapsed >= max_total_seconds:
                 raise RuntimeError(
                     f"Upload timed out after {int(max_total_seconds)} seconds (no response from API)."
                 )
@@ -208,12 +259,12 @@ def try_upload_youtube(
             print("[upload] response içinde video id yok.", flush=True)
             return None
 
+        # İşleme durumu
         try:
-            for _ in range(5):
+            for _ in range(5):  # ~1 dakikada birkaç kere bak
                 st = _check_video_status(youtube, vid)
                 s = ((st.get("items") or [{}])[0].get("status") or {})
-                us = s.get("uploadStatus")
-                ps = s.get("privacyStatus")
+                us = s.get("uploadStatus"); ps = s.get("privacyStatus")
                 print(f"[upload] status check: uploadStatus={us}, privacy={ps}", flush=True)
                 if us in {"processed", "uploaded"}:
                     break
@@ -234,18 +285,20 @@ def try_upload_youtube(
         print(f"[upload error] {e}", flush=True)
         return None
 
-# ---- basit CLI ----
-def main():
-    import argparse, shlex
-    p = argparse.ArgumentParser()
-    p.add_argument("--video", required=True, help="Yüklenecek mp4 yolu")
-    p.add_argument("--title", required=True)
-    p.add_argument("--desc", default="")
-    p.add_argument("--privacy", default=os.getenv("YT_PRIVACY","public"))
-    p.add_argument("--category", default=os.getenv("YT_CATEGORY_ID","22"))
-    p.add_argument("--tags", default=os.getenv("YT_TAGS",""))  # "a,b,c"
-    args = p.parse_args()
+# ---- CLI ------------------------------------------------------------------
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument("--video", required=True, help="Yüklenecek MP4 dosyası")
+    p.add_argument("--title", required=True, help="Video başlığı")
+    p.add_argument("--desc", default="", help="Açıklama")
+    p.add_argument("--privacy", default="public", choices=["public","unlisted","private"])
+    p.add_argument("--category", default="22", help="YouTube categoryId (varsayılan 22)")
+    p.add_argument("--tags", default="", help="Virgülle ayrılmış etiketler")
+    return p.parse_args()
+
+if __name__ == "__main__":
+    args = _parse_args()
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     url = try_upload_youtube(
         video_path=args.video,
@@ -253,16 +306,7 @@ def main():
         description=args.desc,
         privacy_status=args.privacy,
         category_id=args.category,
-        tags=tags
+        tags=tags,
     )
-    if url:
-        print(f"VIDEO_URL={url}")
-        # CI adımlarının kolay alması için:
-        with open("out/youtube_url.txt","w",encoding="utf-8") as f:
-            f.write(url+"\n")
-        sys.exit(0)
-    else:
-        sys.exit(2)
-
-if __name__ == "__main__":
-    main()
+    if not url:
+        raise SystemExit(1)
