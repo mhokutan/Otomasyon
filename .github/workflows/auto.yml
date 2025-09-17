@@ -65,7 +65,7 @@ jobs:
             fi
           done
           if [ "$missing" -eq 1 ]; then
-            echo "Yükleme için sonraki adımda atlama yapılabilir."
+            echo "Yükleme adımı secrets yoksa otomatik atlanacak."
           fi
           echo "Preflight OK"
 
@@ -111,12 +111,13 @@ jobs:
           mkdir -p out
           rm -f out/*.mp4 || true
           echo "== RUN =="
-          # HATA OLURSA JOB FAIL ETSİN (|| true YOK!)
           python -X dev -u -m src.main 2>&1 | tee "out/run_${{ matrix.lang }}.log"
           echo "== OUT =="
           ls -lah out
-          # Genel isim: final_${lang}.mp4 varsayımı; gerekirse src.main'e göre değiştir
-          test -f "out/final_${{ matrix.lang }}.mp4" || (echo "::error::Video çıktısı bulunamadı"; exit 1)
+          # src.main farklı ad üretiyorsa bu satırı ona göre değiştirin:
+          if [ ! -f "out/final_${{ matrix.lang }}.mp4" ]; then
+            echo "::error::Video çıktısı bulunamadı (out/final_${{ matrix.lang }}.mp4 bekleniyordu)"; exit 1
+          fi
 
       - name: Auth smoke test (YouTube)
         if: ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_SECRET != '' && secrets.YT_REFRESH_TOKEN != '' }}
@@ -151,49 +152,18 @@ jobs:
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN != '' && secrets.YT_REFRESH_TOKEN || vars.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
           YT_MADE_FOR_KIDS: "false"
-          VIDEO_PATH: out/final_${{ matrix.lang }}.mp4
-          VIDEO_TITLE: "${{ matrix.title_prefix }} ${{ matrix.lang == 'tr' && 'Günlük Otomatik Hikaye' || 'Daily Auto Story' }}"
-          VIDEO_DESC: "Generated automatically. Lang=${{ matrix.lang }}, Region=${{ matrix.region }}"
+          YT_FAIL_ON_ERROR: "1"
+          YT_DEBUG: "1"
+          YT_TAGS: "shorts,ai,story"
         run: |
           set -euo pipefail
-          ls -lh "$VIDEO_PATH"
-          python - << 'PY'
-          import os, google.auth.transport.requests, sys
-          from google.oauth2.credentials import Credentials
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload
-          path = os.environ["VIDEO_PATH"]
-          if not os.path.exists(path):
-              print("Video bulunamadı:", path, file=sys.stderr); sys.exit(1)
-          creds = Credentials(
-              None,
-              refresh_token=os.environ["YT_REFRESH_TOKEN"],
-              client_id=os.environ["YT_CLIENT_ID"],
-              client_secret=os.environ["YT_CLIENT_SECRET"],
-              token_uri="https://oauth2.googleapis.com/token",
-              scopes=["https://www.googleapis.com/auth/youtube.upload"]
-          )
-          creds.refresh(google.auth.transport.requests.Request())
-          yt = build("youtube","v3",credentials=creds)
-          body = {
-            "snippet": {
-              "title": os.environ["VIDEO_TITLE"],
-              "description": os.environ["VIDEO_DESC"],
-              "tags": ["shorts","ai","story"]
-            },
-            "status": {
-              "privacyStatus": os.environ.get("YT_PRIVACY","public"),
-              "selfDeclaredMadeForKids": os.environ.get("YT_MADE_FOR_KIDS","false").lower()=="true"
-            }
-          }
-          media = MediaFileUpload(path, mimetype="video/mp4", chunksize=8*1024*1024, resumable=True)
-          req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
-          resp = None
-          while resp is None:
-              status, resp = req.next_chunk()
-              if status: print(f"Upload progress: {int(status.progress()*100)}%")
-          print("Uploaded videoId:", resp["id"])
-          PY
+          VIDEO_PATH="out/final_${{ matrix.lang }}.mp4"
+          test -f "$VIDEO_PATH" || (echo "::error::Video çıktısı yok: $VIDEO_PATH" && exit 1)
+          python youtube_upload.py \
+            --video "$VIDEO_PATH" \
+            --title "${{ matrix.title_prefix }} ${{ matrix.lang == 'tr' && 'Günlük Otomatik Hikaye' || 'Daily Auto Story' }}" \
+            --desc  "Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Otomasyon yüklemesi" \
+            --privacy "${{ env.YT_PRIVACY || 'public' }}"
 
       - name: Upload artifact (${{ matrix.lang }})
         uses: actions/upload-artifact@v4
