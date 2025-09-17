@@ -1,3 +1,4 @@
+# .github/workflows/auto.yml
 name: yt-auto-story
 
 on:
@@ -45,25 +46,36 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      # --- Anahtar kontrolü: burada has_yt çıktısını üretiriz
       - name: Preflight (keys)
         id: gates
         env:
+          # OPENAI
           OPENAI_API_KEY_S: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_KEY_V: ${{ vars.OPENAI_API_KEY }}
+          # HF (opsiyonel)
+          HF_TOKEN_S: ${{ secrets.HF_TOKEN }}
+          HF_TOKEN_V: ${{ vars.HF_TOKEN }}
+          # YT
           YT_CLIENT_ID_S: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET_S: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN_S: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${OPENAI_API_KEY_S}${OPENAI_API_KEY_V}" ]; then
+
+          # OpenAI anahtar uyarısı (sessiz TTS'e düşebilir)
+          if [ -z "${OPENAI_API_KEY_S:-}${OPENAI_API_KEY_V:-}" ]; then
             echo "::warning::OPENAI_API_KEY yok; TTS sessiz moda düşebilir"
           fi
+
+          # YouTube anahtarları var mı?
           has_yt=false
           if [ -n "${YT_CLIENT_ID_S:-}" ] && [ -n "${YT_CLIENT_SECRET_S:-}" ] && [ -n "${YT_REFRESH_TOKEN_S:-}" ]; then
             has_yt=true
           else
             echo "::warning::YouTube secret'larından biri eksik; upload atlanacak"
           fi
+
           echo "has_yt=${has_yt}" >> "$GITHUB_OUTPUT"
 
       - name: Build video (STORY • ${{ matrix.lang }})
@@ -74,8 +86,9 @@ jobs:
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
 
-          # OPENAI anahtarı (secret varsa onu, yoksa vars)
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
+          # OPENAI: secrets/vars ayrı; aşağıda script içinde seçim yapacağız
+          OPENAI_API_KEY_S: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY_V: ${{ vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: "https://api.openai.com/v1"
           OPENAI_MODEL_CHAT: "gpt-4o-mini"
           OPENAI_MODEL_TTS:  "gpt-4o-mini-tts"
@@ -100,7 +113,9 @@ jobs:
           PRESENTER_SIZE: "260"
           PRESENTER_INITIALS: "AI"
 
-          HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
+          # HF opsiyonel
+          HF_TOKEN_S: ${{ secrets.HF_TOKEN }}
+          HF_TOKEN_V: ${{ vars.HF_TOKEN }}
 
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
@@ -108,71 +123,143 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
+
+          # --- OPENAI_API_KEY seçimi
+          if [ -n "${OPENAI_API_KEY_S:-}" ]; then
+            export OPENAI_API_KEY="${OPENAI_API_KEY_S}"
+          else
+            export OPENAI_API_KEY="${OPENAI_API_KEY_V:-}"
+          fi
+
+          # --- HF_TOKEN seçimi (opsiyonel)
+          if [ -n "${HF_TOKEN_S:-}" ]; then
+            export HF_TOKEN="${HF_TOKEN_S}"
+          else
+            export HF_TOKEN="${HF_TOKEN_V:-}"
+          fi
+
           echo "== RUN =="
           python -X dev -u -m src.main 2>&1 | tee "out/run_${{ matrix.lang }}.log" || true
           echo "== OUT =="
           ls -lah out || true
+
+          # Üretilen en yeni mp4'ü seç
           latest="$(ls -t out/*.mp4 2>/dev/null | head -n1 || true)"
           if [ -z "$latest" ]; then
-            echo "::error::Hiç .mp4 üretilmemiş görünüyor (out/*.mp4 bulunamadı)"; exit 1
+            echo "::error::Hiç .mp4 üretilmemiş görünüyor (out/*.mp4 bulunamadı)"
+            exit 1
           fi
           echo "video_path=$latest" >> "$GITHUB_OUTPUT"
 
-      # >>> ÖNEMLİ: Scope uyuşmazlığı (invalid_scope) yaşamamak için youtube_upload.py içindeki
-      # _configured_scopes() ile aynı mantığı kullanıyoruz. Eğer refresh token yalnızca upload ile
-      # alınmışsa, readonly denemiyoruz.
+      # --- YouTube refresh token'ı gerçekten çalışıyor mu? (import kullanmıyoruz)
       - name: Auth smoke test (YouTube)
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
-          YT_CLIENT_ID:     ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_ID || vars.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET != '' && secrets.YT_CLIENT_SECRET || vars.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN != '' && secrets.YT_REFRESH_TOKEN || vars.YT_REFRESH_TOKEN }}
-          # İsteğe bağlı: Actions Variables kısmına YT_SCOPES eklersen buradan okunur
-          # Örn: "https://www.googleapis.com/auth/youtube.upload"
-          YT_SCOPES:        ${{ vars.YT_SCOPES }}
+          # secrets/vars'tan seçim RUN içinde yapılır
+          YT_CLIENT_ID_S:     ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET_S: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN_S: ${{ secrets.YT_REFRESH_TOKEN }}
+          # İstersen repo vars'a YT_SCOPES ekleyebilirsin (örn: "youtube.upload youtube.readonly")
+          YT_SCOPES_RAW: ${{ vars.YT_SCOPES }}
         run: |
-          python - << 'PY'
-          import os, json
-          import google.auth.transport.requests
-          from googleapiclient.discovery import build
-          from youtube_upload import _configured_scopes, _creds
+          set -euo pipefail
 
-          try:
-              creds = _creds()
-              print("Refresh OK. Scopes:", json.dumps(_configured_scopes()))
-              # Yalnızca 'youtube.readonly' IZNI varsa kanalı sorgula (ekstra doğrulama)
-              scopes = set(_configured_scopes())
-              if "https://www.googleapis.com/auth/youtube.readonly" in scopes:
-                  yt = build("youtube","v3",credentials=creds)
-                  me = yt.channels().list(part="snippet", mine=True).execute()
-                  print("Channel:", me["items"][0]["snippet"]["title"])
-          except Exception as e:
-              print("YouTube OAuth refresh FAILED:", e)
-              raise
+          # YouTube client değerlerini seç
+          export YT_CLIENT_ID="${YT_CLIENT_ID_S}"
+          export YT_CLIENT_SECRET="${YT_CLIENT_SECRET_S}"
+          export YT_REFRESH_TOKEN="${YT_REFRESH_TOKEN_S}"
+
+          python - << 'PY'
+          import os, re
+          import google.auth.transport.requests
+          from google.oauth2.credentials import Credentials
+          from googleapiclient.discovery import build
+
+          # Varsayılan: sadece upload → invalid_scope riskini minimize eder
+          DEFAULT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+          VALID = {
+              "https://www.googleapis.com/auth/youtube.upload",
+              "https://www.googleapis.com/auth/youtube.readonly",
+          }
+          SHORT = {
+              "youtube.upload": "https://www.googleapis.com/auth/youtube.upload",
+              "upload": "https://www.googleapis.com/auth/youtube.upload",
+              "youtube.readonly": "https://www.googleapis.com/auth/youtube.readonly",
+              "readonly": "https://www.googleapis.com/auth/youtube.readonly",
+          }
+
+          raw = os.getenv("YT_SCOPES_RAW")
+          scopes = []
+          if raw:
+              for t in re.split(r"[,\s]+", raw):
+                  t = t.strip()
+                  if not t: continue
+                  t = SHORT.get(t, t)
+                  if t in VALID:
+                      scopes.append(t)
+          if not scopes:
+              scopes = DEFAULT_SCOPES
+
+          print("Using scopes:", scopes)
+
+          creds = Credentials(
+              None,
+              refresh_token=os.environ["YT_REFRESH_TOKEN"],
+              client_id=os.environ["YT_CLIENT_ID"],
+              client_secret=os.environ["YT_CLIENT_SECRET"],
+              token_uri="https://oauth2.googleapis.com/token",
+              scopes=scopes,
+          )
+          creds.refresh(google.auth.transport.requests.Request())
+          print("Refresh OK")
+
+          if "https://www.googleapis.com/auth/youtube.readonly" in scopes:
+              yt = build("youtube","v3",credentials=creds)
+              me = yt.channels().list(part="snippet", mine=True).execute()
+              print("Channel:", me["items"][0]["snippet"]["title"])
           PY
 
       - name: Upload to YouTube (${{ matrix.lang }})
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
-          YT_CLIENT_ID:     ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_ID || vars.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET != '' && secrets.YT_CLIENT_SECRET || vars.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN != '' && secrets.YT_REFRESH_TOKEN || vars.YT_REFRESH_TOKEN }}
+          # secrets/vars seçimi: burada da sadece secrets kullanıyoruz (gates zaten doğruladı)
+          YT_CLIENT_ID:     ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+
+          # Upload ayarları
           YT_PRIVACY: "public"
           YT_MADE_FOR_KIDS: "false"
           YT_DEBUG: "1"
-          YT_TAGS: "shorts,ai,story"
-          # İsteğe bağlı: yalnızca upload scope'uyla alındıysa şunu bir Actions Variable olarak ekleyebilirsin:
-          # YT_SCOPES = https://www.googleapis.com/auth/youtube.upload
-          YT_SCOPES: ${{ vars.YT_SCOPES }}
         run: |
           set -euo pipefail
+
           VIDEO_PATH="${{ steps.build.outputs.video_path }}"
+          if [ ! -s "$VIDEO_PATH" ]; then
+            echo "::error::Yüklenecek video bulunamadı: $VIDEO_PATH"
+            exit 1
+          fi
+
+          export YT_CLIENT_ID YT_CLIENT_SECRET YT_REFRESH_TOKEN YT_PRIVACY YT_MADE_FOR_KIDS YT_DEBUG
+
           echo "Yüklenecek dosya: $VIDEO_PATH"
+
+          # Başlık/desc
+          if [ "${{ matrix.lang }}" = "tr" ]; then
+            TITLE="${{ matrix.title_prefix }} Günlük Otomatik Hikaye"
+          else
+            TITLE="${{ matrix.title_prefix }} Daily Auto Story"
+          fi
+          DESC="Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Otomasyon yüklemesi"
+
+          # Kökteki youtube_upload.py'yi CLI gibi çağırıyoruz
           python youtube_upload.py \
             --video "$VIDEO_PATH" \
-            --title "${{ matrix.title_prefix }} ${{ matrix.lang == 'tr' && 'Günlük Otomatik Hikaye' || 'Daily Auto Story' }}" \
-            --desc  "Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Otomasyon yüklemesi" \
-            --privacy "${{ env.YT_PRIVACY }}"
+            --title "$TITLE" \
+            --desc  "$DESC" \
+            --privacy "${YT_PRIVACY}"
+
+          echo "Upload adımı bitti."
 
       - name: Upload artifact (${{ matrix.lang }})
         uses: actions/upload-artifact@v4
