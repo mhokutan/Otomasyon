@@ -19,6 +19,15 @@ def _get_bool_env(name: str, default: bool=False) -> bool:
     v=_env(name)
     return default if v is None else str(v).strip().lower() in ("1","true","yes","on")
 
+def _get_float_env(name: str, default: float) -> float:
+    v = _env(name)
+    if v is None:
+        return default
+    try:
+        return float(str(v).strip())
+    except Exception:
+        return default
+
 # Default scopes allow uploads and basic read access so we can fetch
 # channel metadata/status during debug checks.
 SCOPES: List[str] = [
@@ -143,10 +152,70 @@ def try_upload_youtube(
     try:
         request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
         response = None
+        max_idle_seconds = max(5.0, _get_float_env("YT_UPLOAD_MAX_IDLE_SECONDS", 180.0))
+        configured_total = _get_float_env("YT_UPLOAD_MAX_TOTAL_SECONDS", 1800.0)
+        max_total_seconds = max(configured_total, max_idle_seconds + 1.0)
+
+        response = None
+        start_time = time.monotonic()
+        last_progress_time = start_time
+        last_progress_bytes = -1.0
+        last_progress_fraction = -1.0
+        last_logged_percent = -1
+
         while response is None:
             status, response = request.next_chunk()
-            if status:
-                print(f"[upload] progress: {int(status.progress()*100)}%", flush=True)
+            now = time.monotonic()
+            made_progress = False
+            current_fraction = None
+
+            if status is not None:
+                progress_fn = getattr(status, "progress", None)
+                if callable(progress_fn):
+                    try:
+                        raw_fraction = progress_fn()
+                    except Exception:
+                        raw_fraction = None
+                    if raw_fraction is not None:
+                        try:
+                            current_fraction = float(raw_fraction)
+                        except Exception:
+                            current_fraction = None
+                        else:
+                            current_fraction = max(0.0, min(1.0, current_fraction))
+                            if current_fraction > last_progress_fraction + 1e-6:
+                                last_progress_fraction = current_fraction
+                                made_progress = True
+                            percent_int = int(current_fraction * 100)
+                            if percent_int != last_logged_percent:
+                                print(f"[upload] progress: {percent_int}%", flush=True)
+                                last_logged_percent = percent_int
+
+                bytes_progress = getattr(status, "resumable_progress", None)
+                if isinstance(bytes_progress, (int, float)):
+                    if bytes_progress > last_progress_bytes + 0.5:
+                        last_progress_bytes = float(bytes_progress)
+                        made_progress = True
+
+            if made_progress:
+                last_progress_time = now
+            elif response is None:
+                idle_seconds = now - last_progress_time
+                if idle_seconds >= max_idle_seconds:
+                    last_pct = 0 if last_progress_fraction < 0 else int(last_progress_fraction * 100)
+                    last_bytes = None if last_progress_bytes < 0 else int(last_progress_bytes)
+                    detail = f"last progress {last_pct}%"
+                    if last_bytes is not None:
+                        detail += f" (~{last_bytes} bytes)"
+                    raise RuntimeError(
+                        f"Upload stalled: no progress for {int(max_idle_seconds)} seconds ({detail})."
+                    )
+
+            elapsed = now - start_time
+            if elapsed >= max_total_seconds:
+                raise RuntimeError(
+                    f"Upload timed out after {int(max_total_seconds)} seconds (no response from API)."
+                )
 
         _dump_json("out/youtube_response.json", response or {})
         vid = (response or {}).get("id")
