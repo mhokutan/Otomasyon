@@ -41,8 +41,6 @@ def _configured_scopes() -> List[str]:
     raw = _env("YT_SCOPES")
     if raw is None:
         return SCOPES
-    # Allow comma or whitespace separated scopes so users can copy the same
-    # values they pass to the helper script (``--scopes scope1 scope2``).
     tokens = re.split(r"[,\s]+", raw)
     scopes = [part.strip() for part in tokens if part.strip()]
     return scopes or SCOPES
@@ -89,7 +87,6 @@ def _creds() -> Credentials:
         raise RuntimeError("YouTube OAuth token refresh failed; see out/youtube_error.json") from exc
     return cred
 
-
 def validate_refresh_token() -> bool:
     """Refresh the stored credentials and confirm the refresh token is usable."""
     creds = _creds()
@@ -125,7 +122,6 @@ def try_upload_youtube(
     youtube = build("youtube", "v3", credentials=creds)
 
     if YT_DEBUG:
-        # Kim hangi kanala yüklüyor → kayda geçir (debug modunda)
         try:
             _who_am_i(youtube)
             print("[upload] channel info written to out/youtube_me.json", flush=True)
@@ -223,7 +219,6 @@ def try_upload_youtube(
             print("[upload] response içinde video id yok.", flush=True)
             return None
 
-        # Yüklendi -> durumunu kısa bir süre sorgula (işleme/processed vs.)
         try:
             for _ in range(5):  # ~1 dakikada birkaç kez kontrol
                 st = _check_video_status(youtube, vid)
@@ -249,3 +244,37 @@ def try_upload_youtube(
         _dump_json("out/youtube_error.json", {"error": str(e)})
         print(f"[upload error] {e}", flush=True)
         return None
+
+# ---- CLI ----
+if __name__ == "__main__":
+    import sys, argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--video", required=True, help="Yüklenecek video yolu (mp4)")
+    ap.add_argument("--title", required=True, help="Başlık")
+    ap.add_argument("--desc", default="", help="Açıklama")
+    ap.add_argument("--privacy", default=os.getenv("YT_PRIVACY", "public"),
+                    choices=["public","unlisted","private"])
+    ap.add_argument("--category", default=os.getenv("YT_CATEGORY_ID", "22"))
+    ap.add_argument("--tags", default=os.getenv("YT_TAGS", ""))  # "tag1,tag2"
+    ap.add_argument("--fail-on-error", action="store_true",
+                    default=_get_bool_env("YT_FAIL_ON_ERROR", True))
+    args = ap.parse_args()
+
+    tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
+    url = try_upload_youtube(
+        video_path=args.video,
+        title=args.title,
+        description=args.desc,
+        privacy_status=args.privacy,
+        category_id=args.category,
+        tags=tags,
+    )
+    if not url:
+        msg = "YouTube upload başarısız. Ayrıntılar: out/youtube_error.json"
+        if args.fail_on_error:
+            print(msg, file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(msg)
+    else:
+        print(url)
