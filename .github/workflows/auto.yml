@@ -67,12 +67,14 @@ jobs:
           echo "has_yt=${has_yt}" >> "$GITHUB_OUTPUT"
 
       - name: Build video (STORY • ${{ matrix.lang }})
+        id: build
         env:
           THEME: "story"
           LANGUAGE: ${{ matrix.lang }}
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
 
+          # OPENAI anahtarı (secret varsa onu, yoksa vars)
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: "https://api.openai.com/v1"
           OPENAI_MODEL_CHAT: "gpt-4o-mini"
@@ -107,53 +109,61 @@ jobs:
           set -euo pipefail
           mkdir -p out
           echo "== RUN =="
-          # kodunuz video üretimini burada yapıyor:
           python -X dev -u -m src.main 2>&1 | tee "out/run_${{ matrix.lang }}.log" || true
           echo "== OUT =="
           ls -lah out || true
-          # Üretilen en yeni mp4'ü seç:
           latest="$(ls -t out/*.mp4 2>/dev/null | head -n1 || true)"
           if [ -z "$latest" ]; then
             echo "::error::Hiç .mp4 üretilmemiş görünüyor (out/*.mp4 bulunamadı)"; exit 1
           fi
           echo "video_path=$latest" >> "$GITHUB_OUTPUT"
-        id: build
 
+      # >>> ÖNEMLİ: Scope uyuşmazlığı (invalid_scope) yaşamamak için youtube_upload.py içindeki
+      # _configured_scopes() ile aynı mantığı kullanıyoruz. Eğer refresh token yalnızca upload ile
+      # alınmışsa, readonly denemiyoruz.
       - name: Auth smoke test (YouTube)
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_ID || vars.YT_CLIENT_ID }}
+          YT_CLIENT_ID:     ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_ID || vars.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET != '' && secrets.YT_CLIENT_SECRET || vars.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN != '' && secrets.YT_REFRESH_TOKEN || vars.YT_REFRESH_TOKEN }}
+          # İsteğe bağlı: Actions Variables kısmına YT_SCOPES eklersen buradan okunur
+          # Örn: "https://www.googleapis.com/auth/youtube.upload"
+          YT_SCOPES:        ${{ vars.YT_SCOPES }}
         run: |
           python - << 'PY'
-          import os, google.auth.transport.requests
-          from google.oauth2.credentials import Credentials
+          import os, json
+          import google.auth.transport.requests
           from googleapiclient.discovery import build
-          creds = Credentials(
-              None,
-              refresh_token=os.environ["YT_REFRESH_TOKEN"],
-              client_id=os.environ["YT_CLIENT_ID"],
-              client_secret=os.environ["YT_CLIENT_SECRET"],
-              token_uri="https://oauth2.googleapis.com/token",
-              scopes=["https://www.googleapis.com/auth/youtube.readonly"]
-          )
-          creds.refresh(google.auth.transport.requests.Request())
-          yt = build("youtube","v3",credentials=creds)
-          me = yt.channels().list(part="snippet", mine=True).execute()
-          print("OK channel:", me["items"][0]["snippet"]["title"])
+          from youtube_upload import _configured_scopes, _creds
+
+          try:
+              creds = _creds()
+              print("Refresh OK. Scopes:", json.dumps(_configured_scopes()))
+              # Yalnızca 'youtube.readonly' IZNI varsa kanalı sorgula (ekstra doğrulama)
+              scopes = set(_configured_scopes())
+              if "https://www.googleapis.com/auth/youtube.readonly" in scopes:
+                  yt = build("youtube","v3",credentials=creds)
+                  me = yt.channels().list(part="snippet", mine=True).execute()
+                  print("Channel:", me["items"][0]["snippet"]["title"])
+          except Exception as e:
+              print("YouTube OAuth refresh FAILED:", e)
+              raise
           PY
 
       - name: Upload to YouTube (${{ matrix.lang }})
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_ID || vars.YT_CLIENT_ID }}
+          YT_CLIENT_ID:     ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_ID || vars.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET != '' && secrets.YT_CLIENT_SECRET || vars.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN != '' && secrets.YT_REFRESH_TOKEN || vars.YT_REFRESH_TOKEN }}
           YT_PRIVACY: "public"
           YT_MADE_FOR_KIDS: "false"
           YT_DEBUG: "1"
           YT_TAGS: "shorts,ai,story"
+          # İsteğe bağlı: yalnızca upload scope'uyla alındıysa şunu bir Actions Variable olarak ekleyebilirsin:
+          # YT_SCOPES = https://www.googleapis.com/auth/youtube.upload
+          YT_SCOPES: ${{ vars.YT_SCOPES }}
         run: |
           set -euo pipefail
           VIDEO_PATH="${{ steps.build.outputs.video_path }}"
