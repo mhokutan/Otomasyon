@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os, json, mimetypes, pathlib, time
+import os, json, mimetypes, pathlib, time, sys
 import re
 from typing import Optional, List, Dict, Any
 
@@ -28,8 +28,6 @@ def _get_float_env(name: str, default: float) -> float:
     except Exception:
         return default
 
-# Default scopes allow uploads and basic read access so we can fetch
-# channel metadata/status during debug checks.
 SCOPES: List[str] = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
@@ -88,7 +86,6 @@ def _creds() -> Credentials:
     return cred
 
 def validate_refresh_token() -> bool:
-    """Refresh the stored credentials and confirm the refresh token is usable."""
     creds = _creds()
     if not creds.valid:
         raise RuntimeError("YouTube OAuth credentials are not valid after refresh.")
@@ -101,7 +98,6 @@ def _who_am_i(youtube) -> Dict[str, Any]:
     return ch
 
 def _check_video_status(youtube, video_id: str) -> Dict[str, Any]:
-    # uploadStatus / privacyStatus vs. kontrol
     info = youtube.videos().list(part="status,snippet", id=video_id).execute()
     _dump_json("out/youtube_status.json", info)
     return info
@@ -111,7 +107,7 @@ def try_upload_youtube(
     title: str,
     description: str,
     privacy_status: str = "public",
-    category_id: str = "22",  # People & Blogs (22) / Entertainment (24)
+    category_id: str = "22",
     tags: Optional[List[str]] = None,
 ) -> Optional[str]:
     vp = pathlib.Path(video_path)
@@ -152,7 +148,6 @@ def try_upload_youtube(
         configured_total = _get_float_env("YT_UPLOAD_MAX_TOTAL_SECONDS", 1800.0)
         max_total_seconds = max(configured_total, max_idle_seconds + 1.0)
 
-        response = None
         start_time = time.monotonic()
         last_progress_time = start_time
         last_progress_bytes = -1.0
@@ -163,21 +158,14 @@ def try_upload_youtube(
             status, response = request.next_chunk()
             now = time.monotonic()
             made_progress = False
-            current_fraction = None
 
             if status is not None:
                 progress_fn = getattr(status, "progress", None)
                 if callable(progress_fn):
                     try:
                         raw_fraction = progress_fn()
-                    except Exception:
-                        raw_fraction = None
-                    if raw_fraction is not None:
-                        try:
+                        if raw_fraction is not None:
                             current_fraction = float(raw_fraction)
-                        except Exception:
-                            current_fraction = None
-                        else:
                             current_fraction = max(0.0, min(1.0, current_fraction))
                             if current_fraction > last_progress_fraction + 1e-6:
                                 last_progress_fraction = current_fraction
@@ -186,6 +174,8 @@ def try_upload_youtube(
                             if percent_int != last_logged_percent:
                                 print(f"[upload] progress: {percent_int}%", flush=True)
                                 last_logged_percent = percent_int
+                    except Exception:
+                        pass
 
                 bytes_progress = getattr(status, "resumable_progress", None)
                 if isinstance(bytes_progress, (int, float)):
@@ -207,8 +197,7 @@ def try_upload_youtube(
                         f"Upload stalled: no progress for {int(max_idle_seconds)} seconds ({detail})."
                     )
 
-            elapsed = now - start_time
-            if elapsed >= max_total_seconds:
+            if (now - start_time) >= max_total_seconds:
                 raise RuntimeError(
                     f"Upload timed out after {int(max_total_seconds)} seconds (no response from API)."
                 )
@@ -220,7 +209,7 @@ def try_upload_youtube(
             return None
 
         try:
-            for _ in range(5):  # ~1 dakikada birkaç kez kontrol
+            for _ in range(5):
                 st = _check_video_status(youtube, vid)
                 s = ((st.get("items") or [{}])[0].get("status") or {})
                 us = s.get("uploadStatus")
@@ -245,20 +234,17 @@ def try_upload_youtube(
         print(f"[upload error] {e}", flush=True)
         return None
 
-# ---- CLI ----
-if __name__ == "__main__":
-    import sys, argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--video", required=True, help="Yüklenecek video yolu (mp4)")
-    ap.add_argument("--title", required=True, help="Başlık")
-    ap.add_argument("--desc", default="", help="Açıklama")
-    ap.add_argument("--privacy", default=os.getenv("YT_PRIVACY", "public"),
-                    choices=["public","unlisted","private"])
-    ap.add_argument("--category", default=os.getenv("YT_CATEGORY_ID", "22"))
-    ap.add_argument("--tags", default=os.getenv("YT_TAGS", ""))  # "tag1,tag2"
-    ap.add_argument("--fail-on-error", action="store_true",
-                    default=_get_bool_env("YT_FAIL_ON_ERROR", True))
-    args = ap.parse_args()
+# ---- basit CLI ----
+def main():
+    import argparse, shlex
+    p = argparse.ArgumentParser()
+    p.add_argument("--video", required=True, help="Yüklenecek mp4 yolu")
+    p.add_argument("--title", required=True)
+    p.add_argument("--desc", default="")
+    p.add_argument("--privacy", default=os.getenv("YT_PRIVACY","public"))
+    p.add_argument("--category", default=os.getenv("YT_CATEGORY_ID","22"))
+    p.add_argument("--tags", default=os.getenv("YT_TAGS",""))  # "a,b,c"
+    args = p.parse_args()
 
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     url = try_upload_youtube(
@@ -267,14 +253,16 @@ if __name__ == "__main__":
         description=args.desc,
         privacy_status=args.privacy,
         category_id=args.category,
-        tags=tags,
+        tags=tags
     )
-    if not url:
-        msg = "YouTube upload başarısız. Ayrıntılar: out/youtube_error.json"
-        if args.fail_on_error:
-            print(msg, file=sys.stderr)
-            sys.exit(1)
-        else:
-            print(msg)
+    if url:
+        print(f"VIDEO_URL={url}")
+        # CI adımlarının kolay alması için:
+        with open("out/youtube_url.txt","w",encoding="utf-8") as f:
+            f.write(url+"\n")
+        sys.exit(0)
     else:
-        print(url)
+        sys.exit(2)
+
+if __name__ == "__main__":
+    main()
