@@ -45,7 +45,9 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      # --- Secrets & anahtarlar için önden kontrol (artifact/log'a da yazar) ---
       - name: Preflight (keys)
+        id: gates
         env:
           OPENAI_API_KEY_S: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_KEY_V: ${{ vars.OPENAI_API_KEY }}
@@ -54,19 +56,19 @@ jobs:
           YT_REFRESH_TOKEN_S: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
           set -euo pipefail
+          echo "Preflight kontrolü başlıyor..."
           if [ -z "${OPENAI_API_KEY_S}${OPENAI_API_KEY_V}" ]; then
             echo "::warning::OPENAI_API_KEY yok; TTS sessiz moda düşecek"
           fi
-          missing=0
-          for k in YT_CLIENT_ID_S YT_CLIENT_SECRET_S YT_REFRESH_TOKEN_S; do
-            if [ -z "${!k}" ]; then
-              echo "::warning::${k%_S} yok; YouTube yüklemesi atlanacak"
-              missing=1
-            fi
-          done
-          if [ "$missing" -eq 1 ]; then
-            echo "Yükleme adımı secrets yoksa otomatik atlanacak."
+
+          has_yt=false
+          if [ -n "${YT_CLIENT_ID_S:-}" ] && [ -n "${YT_CLIENT_SECRET_S:-}" ] && [ -n "${YT_REFRESH_TOKEN_S:-}" ]; then
+            has_yt=true
+          else
+            echo "::warning::YouTube secret'larından en az biri eksik; upload adımı atlanacak"
           fi
+
+          echo "has_yt=${has_yt}" >> "$GITHUB_OUTPUT"
           echo "Preflight OK"
 
       - name: Build video (STORY • ${{ matrix.lang }})
@@ -114,13 +116,13 @@ jobs:
           python -X dev -u -m src.main 2>&1 | tee "out/run_${{ matrix.lang }}.log"
           echo "== OUT =="
           ls -lah out
-          # src.main farklı ad üretiyorsa bu satırı ona göre değiştirin:
+          # src.main farklı ad kullanıyorsa bu yolu güncelle:
           if [ ! -f "out/final_${{ matrix.lang }}.mp4" ]; then
             echo "::error::Video çıktısı bulunamadı (out/final_${{ matrix.lang }}.mp4 bekleniyordu)"; exit 1
           fi
 
       - name: Auth smoke test (YouTube)
-        if: ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_SECRET != '' && secrets.YT_REFRESH_TOKEN != '' }}
+        if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_ID || vars.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET != '' && secrets.YT_CLIENT_SECRET || vars.YT_CLIENT_SECRET }}
@@ -145,7 +147,7 @@ jobs:
           PY
 
       - name: Upload to YouTube (${{ matrix.lang }})
-        if: ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_SECRET != '' && secrets.YT_REFRESH_TOKEN != '' }}
+        if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_ID || vars.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET != '' && secrets.YT_CLIENT_SECRET || vars.YT_CLIENT_SECRET }}
