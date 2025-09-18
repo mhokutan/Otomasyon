@@ -3,16 +3,12 @@ name: yt-auto-story
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */8 * * *" # UTC; günde 3 kez
+    - cron: "0 */8 * * *"  # UTC; günde 3 kez
 
 jobs:
   publish-story:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
-    concurrency:
-      group: yt-auto-${{ github.workflow }}-${{ matrix.lang }}
-      cancel-in-progress: true
 
     strategy:
       fail-fast: false
@@ -45,7 +41,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Preflight (YouTube secrets)
+      - name: Preflight (YouTube secrets var mı?)
         id: gates
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
@@ -64,51 +60,24 @@ jobs:
       - name: Build video (STORY • ${{ matrix.lang }})
         id: build
         env:
-          # Videoyu üreten kodun beklediği çevre değişkenleri varsa buraya ekle
           THEME: "story"
           LANGUAGE: ${{ matrix.lang }}
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
-          OPENAI_BASE_URL: "https://api.openai.com/v1"   # gerekmiyorsa kodun bunu yok sayar
         run: |
           set -euo pipefail
           mkdir -p out
           echo "== RUN =="
-          # Senin üretim kodun:
           python -X dev -u -m src.main 2>&1 | tee "out/run_${{ matrix.lang }}.log" || true
           echo "== OUT =="
           ls -lah out || true
-
-          # En yeni mp4 dosyasını bul
           latest="$(ls -t out/*.mp4 2>/dev/null | head -n1 || true)"
           if [ -z "$latest" ]; then
-            echo "::error::Hiç .mp4 üretilmemiş görünüyor (out/*.mp4 yok)"; exit 1
+            echo "::error::Hiç .mp4 üretilmemiş görünüyor (out/*.mp4 bulunamadı)"; exit 1
           fi
           echo "video_path=$latest" >> "$GITHUB_OUTPUT"
 
-      - name: Auth smoke test (YouTube)
-        if: ${{ steps.gates.outputs.has_yt == 'true' }}
-        env:
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-        run: |
-          python - << 'PY'
-          import os, google.auth.transport.requests
-          from google.oauth2.credentials import Credentials
-          # Not: sadece READONLY scope ile test -> invalid_scope riskini azaltır
-          scopes=["https://www.googleapis.com/auth/youtube.readonly"]
-          creds = Credentials(
-              None,
-              refresh_token=os.environ["YT_REFRESH_TOKEN"],
-              client_id=os.environ["YT_CLIENT_ID"],
-              client_secret=os.environ["YT_CLIENT_SECRET"],
-              token_uri="https://oauth2.googleapis.com/token",
-              scopes=scopes
-          )
-          creds.refresh(google.auth.transport.requests.Request())
-          print("YouTube token refresh OK (readonly)")
-          PY
+      # DİKKAT: inline Python ile refresh testi YOK (invalid_scope burada tetikleniyordu)
 
       - name: Upload to YouTube (${{ matrix.lang }})
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
@@ -119,23 +88,18 @@ jobs:
           YT_PRIVACY: "public"
           YT_MADE_FOR_KIDS: "false"
           YT_DEBUG: "1"
-          # İstersen özel scope set edebilirsin: YT_SCOPES: "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
+          YT_TAGS: "shorts,ai,story"
         run: |
           set -euo pipefail
+          test -f youtube_upload.py || { echo "::error::youtube_upload.py repo kökünde yok"; exit 1; }
           VIDEO_PATH="${{ steps.build.outputs.video_path }}"
           TITLE="${{ matrix.title_prefix }} ${{ matrix.lang == 'tr' && 'Günlük Otomatik Hikaye' || 'Daily Auto Story' }}"
           DESC="Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Otomasyon yüklemesi"
-
-          if [ ! -f "youtube_upload.py" ]; then
-            echo "::error::youtube_upload.py repo kökünde yok"; exit 1
-          fi
-
           python youtube_upload.py \
             --video "$VIDEO_PATH" \
             --title "$TITLE" \
             --desc  "$DESC" \
-            --privacy "$YT_PRIVACY" \
-            --tags "shorts,ai,story"
+            --privacy "${YT_PRIVACY}"
 
       - name: Upload artifact (${{ matrix.lang }})
         uses: actions/upload-artifact@v4
