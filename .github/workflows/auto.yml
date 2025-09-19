@@ -40,8 +40,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # uploader için gerekli paketler (emin olmak için)
+          pip install google-api-python-client google-auth google-auth-oauthlib
 
-      - name: Preflight (YouTube secrets var mı?)
+      - name: Preflight (keys)
         id: gates
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
@@ -64,6 +66,11 @@ jobs:
           LANGUAGE: ${{ matrix.lang }}
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
+
+          # (İsteğe göre OpenAI/HF değişkenlerinizi ekleyin)
+          PYTHONIOENCODING: "utf-8"
+          LANG: "en_US.UTF-8"
+          PYTHONFAULTHANDLER: "1"
         run: |
           set -euo pipefail
           mkdir -p out
@@ -77,29 +84,134 @@ jobs:
           fi
           echo "video_path=$latest" >> "$GITHUB_OUTPUT"
 
-      # DİKKAT: inline Python ile refresh testi YOK (invalid_scope burada tetikleniyordu)
-
-      - name: Upload to YouTube (${{ matrix.lang }})
+      - name: Auth smoke test (YouTube)
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        run: |
+          python - << 'PY'
+          import os
+          import google.auth.transport.requests
+          from google.oauth2.credentials import Credentials
+          # Not: burada scope vermiyoruz → invalid_scope riskini elimine eder
+          creds = Credentials(
+              None,
+              refresh_token=os.environ["YT_REFRESH_TOKEN"],
+              client_id=os.environ["YT_CLIENT_ID"],
+              client_secret=os.environ["YT_CLIENT_SECRET"],
+              token_uri="https://oauth2.googleapis.com/token",
+          )
+          creds.refresh(google.auth.transport.requests.Request())
+          print("Refresh OK")
+          PY
+
+      - name: Upload to YouTube (${{ matrix.lang }})
+        if: ${{ steps.gates.outputs.has_yt == 'true' }}
+        env:
+          VIDEO_PATH: ${{ steps.build.outputs.video_path }}
+          TITLE: ${{ matrix.title_prefix }} ${{ matrix.lang == 'tr' && 'Günlük Otomatik Hikaye' || 'Daily Auto Story' }}
+          DESC: Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Otomasyon yüklemesi
           YT_PRIVACY: "public"
           YT_MADE_FOR_KIDS: "false"
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_DEBUG: "1"
-          YT_TAGS: "shorts,ai,story"
         run: |
           set -euo pipefail
-          test -f youtube_upload.py || { echo "::error::youtube_upload.py repo kökünde yok"; exit 1; }
-          VIDEO_PATH="${{ steps.build.outputs.video_path }}"
-          TITLE="${{ matrix.title_prefix }} ${{ matrix.lang == 'tr' && 'Günlük Otomatik Hikaye' || 'Daily Auto Story' }}"
-          DESC="Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Otomasyon yüklemesi"
-          python youtube_upload.py \
-            --video "$VIDEO_PATH" \
-            --title "$TITLE" \
-            --desc  "$DESC" \
-            --privacy "${YT_PRIVACY}"
+          echo "Yüklenecek dosya: $VIDEO_PATH"
+          python - << 'PY'
+          # --- Inline YouTube uploader (ayrı dosyaya gerek yok) ---
+          from __future__ import annotations
+          import os, json, mimetypes, pathlib, time, sys
+          from typing import Any, Optional, List
+
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          from googleapiclient.errors import HttpError
+          from google.auth.transport.requests import Request
+          from google.oauth2.credentials import Credentials
+
+          def dump_json(path: str, obj: Any) -> None:
+              os.makedirs("out", exist_ok=True)
+              with open(path, "w", encoding="utf-8") as f:
+                  json.dump(obj, f, ensure_ascii=False, indent=2)
+
+          def env(n: str, d: Optional[str]=None) -> Optional[str]:
+              v = os.getenv(n)
+              return v if v and v.strip() else d
+
+          def get_bool(n: str, default=False) -> bool:
+              v = env(n)
+              return default if v is None else v.strip().lower() in ("1","true","yes","on")
+
+          def creds() -> Credentials:
+              cid = env("YT_CLIENT_ID"); csec = env("YT_CLIENT_SECRET"); rtok = env("YT_REFRESH_TOKEN")
+              if not (cid and csec and rtok):
+                  raise RuntimeError("YT_CLIENT_ID / YT_CLIENT_SECRET / YT_REFRESH_TOKEN eksik")
+              c = Credentials(
+                  None,
+                  refresh_token=rtok,
+                  client_id=cid,
+                  client_secret=csec,
+                  token_uri="https://oauth2.googleapis.com/token",
+              )
+              c.refresh(Request())
+              return c
+
+          def upload(video_path: str, title: str, desc: str, privacy: str="public", category_id: str="22"):
+              p = pathlib.Path(video_path)
+              if not p.exists() or p.stat().st_size <= 0:
+                  raise RuntimeError(f"Video yok/boş: {video_path}")
+
+              y = build("youtube", "v3", credentials=creds(), cache_discovery=False)
+              body = {
+                  "snippet": {
+                      "title": (title or "")[:95],
+                      "description": (desc or "")[:4900],
+                      "categoryId": category_id,
+                  },
+                  "status": {
+                      "privacyStatus": privacy if privacy in {"public","unlisted","private"} else "unlisted",
+                      "selfDeclaredMadeForKids": get_bool("YT_MADE_FOR_KIDS", False),
+                  },
+              }
+              mime, _ = mimetypes.guess_type(str(p))
+              media = MediaFileUpload(str(p), mimetype=mime or "video/mp4", chunksize=1024*1024, resumable=True)
+              req = y.videos().insert(part="snippet,status", body=body, media_body=media)
+
+              resp = None
+              last = -1
+              start = time.monotonic()
+              while resp is None:
+                  status, resp = req.next_chunk()
+                  if status and hasattr(status, "progress"):
+                      try:
+                          pct = int(float(status.progress()) * 100)
+                      except Exception:
+                          pct = None
+                      if pct is not None and pct != last:
+                          print(f"[upload] {pct}%")
+                          last = pct
+                  if time.monotonic() - start > 1800:
+                      raise RuntimeError("Upload timed out (1800s)")
+              dump_json("out/youtube_response.json", resp or {})
+              vid = (resp or {}).get("id")
+              if not vid:
+                  raise RuntimeError("Video id dönmedi")
+              url = f"https://youtu.be/{vid}"
+              print("[done]", url)
+
+          if __name__ == "__main__":
+              upload(
+                  os.environ["VIDEO_PATH"],
+                  os.environ.get("TITLE","Auto Story"),
+                  os.environ.get("DESC",""),
+                  os.environ.get("YT_PRIVACY","public"),
+              )
+          PY
 
       - name: Upload artifact (${{ matrix.lang }})
         uses: actions/upload-artifact@v4
