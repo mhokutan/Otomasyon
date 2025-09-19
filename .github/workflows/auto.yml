@@ -40,7 +40,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # uploader için gerekli paketler (emin olmak için)
           pip install google-api-python-client google-auth google-auth-oauthlib
 
       - name: Preflight (keys)
@@ -67,7 +66,37 @@ jobs:
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
 
-          # (İsteğe göre OpenAI/HF değişkenlerinizi ekleyin)
+          # 🔊 TTS ve Chat için OpenAI ortam değişkenleri (secrets boşsa vars’a düşer)
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL != '' && vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          OPENAI_MODEL_CHAT: ${{ vars.OPENAI_MODEL_CHAT != '' && vars.OPENAI_MODEL_CHAT || 'gpt-4o-mini' }}
+          OPENAI_MODEL_TTS:  ${{ vars.OPENAI_MODEL_TTS  != '' && vars.OPENAI_MODEL_TTS  || 'gpt-4o-mini-tts' }}
+          OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS != '' && vars.OPENAI_MAX_TOKENS || '400' }}
+          OPENAI_TEMPERATURE: ${{ vars.OPENAI_TEMPERATURE != '' && vars.OPENAI_TEMPERATURE || '0.7' }}
+
+          # TTS ayarları
+          TTS_VOICE: ${{ vars.TTS_VOICE != '' && vars.TTS_VOICE || 'alloy' }}
+          TTS_ATEMPO: ${{ vars.TTS_ATEMPO != '' && vars.TTS_ATEMPO || '1.07' }}
+          TTS_BITRATE: ${{ vars.TTS_BITRATE != '' && vars.TTS_BITRATE || '128k' }}
+
+          # Video oluşturma
+          BG_IMAGES_PER_SLIDE: ${{ vars.BG_IMAGES_PER_SLIDE != '' && vars.BG_IMAGES_PER_SLIDE || '4' }}
+          FPS: ${{ vars.FPS != '' && vars.FPS || '60' }}
+          CRF: ${{ vars.CRF != '' && vars.CRF || '22' }}
+          ALLOW_NET_BG: ${{ vars.ALLOW_NET_BG != '' && vars.ALLOW_NET_BG || '0' }}
+          NET_TIMEOUT: ${{ vars.NET_TIMEOUT != '' && vars.NET_TIMEOUT || '20' }}
+          MAX_BG_SIZE_MB: ${{ vars.MAX_BG_SIZE_MB != '' && vars.MAX_BG_SIZE_MB || '8' }}
+
+          # Presenter/overlay
+          BREAKING_ON: ${{ vars.BREAKING_ON != '' && vars.BREAKING_ON || '0' }}
+          BREAKING_TEXT: ${{ vars.BREAKING_TEXT != '' && vars.BREAKING_TEXT || 'BREAKING' }}
+          PRESENTER_URL: ${{ vars.PRESENTER_URL }}
+          PRESENTER_POS: ${{ vars.PRESENTER_POS != '' && vars.PRESENTER_POS || 'top-right' }}
+          PRESENTER_SIZE: ${{ vars.PRESENTER_SIZE != '' && vars.PRESENTER_SIZE || '260' }}
+          PRESENTER_INITIALS: ${{ vars.PRESENTER_INITIALS != '' && vars.PRESENTER_INITIALS || 'AI' }}
+
+          HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
+
           PYTHONIOENCODING: "utf-8"
           LANG: "en_US.UTF-8"
           PYTHONFAULTHANDLER: "1"
@@ -78,10 +107,19 @@ jobs:
           python -X dev -u -m src.main 2>&1 | tee "out/run_${{ matrix.lang }}.log" || true
           echo "== OUT =="
           ls -lah out || true
+
           latest="$(ls -t out/*.mp4 2>/dev/null | head -n1 || true)"
           if [ -z "$latest" ]; then
             echo "::error::Hiç .mp4 üretilmemiş görünüyor (out/*.mp4 bulunamadı)"; exit 1
           fi
+
+          echo "Seçilen video: $latest"
+          # 🎧 Audio var mı? (yoksa upload'ı durdur)
+          if ! ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 "$latest" | grep -q .; then
+            echo "::error::Videoda audio stream yok. TTS başarısız olmuş olabilir. out/run_${{ matrix.lang }}.log dosyasını kontrol edin."
+            exit 1
+          fi
+
           echo "video_path=$latest" >> "$GITHUB_OUTPUT"
 
       - name: Auth smoke test (YouTube)
@@ -95,7 +133,6 @@ jobs:
           import os
           import google.auth.transport.requests
           from google.oauth2.credentials import Credentials
-          # Not: burada scope vermiyoruz → invalid_scope riskini elimine eder
           creds = Credentials(
               None,
               refresh_token=os.environ["YT_REFRESH_TOKEN"],
@@ -123,11 +160,9 @@ jobs:
           set -euo pipefail
           echo "Yüklenecek dosya: $VIDEO_PATH"
           python - << 'PY'
-          # --- Inline YouTube uploader (ayrı dosyaya gerek yok) ---
           from __future__ import annotations
-          import os, json, mimetypes, pathlib, time, sys
-          from typing import Any, Optional, List
-
+          import os, json, mimetypes, pathlib, time
+          from typing import Any, Optional
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
           from googleapiclient.errors import HttpError
@@ -139,25 +174,9 @@ jobs:
               with open(path, "w", encoding="utf-8") as f:
                   json.dump(obj, f, ensure_ascii=False, indent=2)
 
-          def env(n: str, d: Optional[str]=None) -> Optional[str]:
-              v = os.getenv(n)
-              return v if v and v.strip() else d
-
-          def get_bool(n: str, default=False) -> bool:
-              v = env(n)
-              return default if v is None else v.strip().lower() in ("1","true","yes","on")
-
           def creds() -> Credentials:
-              cid = env("YT_CLIENT_ID"); csec = env("YT_CLIENT_SECRET"); rtok = env("YT_REFRESH_TOKEN")
-              if not (cid and csec and rtok):
-                  raise RuntimeError("YT_CLIENT_ID / YT_CLIENT_SECRET / YT_REFRESH_TOKEN eksik")
-              c = Credentials(
-                  None,
-                  refresh_token=rtok,
-                  client_id=cid,
-                  client_secret=csec,
-                  token_uri="https://oauth2.googleapis.com/token",
-              )
+              cid = os.environ["YT_CLIENT_ID"]; csec = os.environ["YT_CLIENT_SECRET"]; rtok = os.environ["YT_REFRESH_TOKEN"]
+              c = Credentials(None, refresh_token=rtok, client_id=cid, client_secret=csec, token_uri="https://oauth2.googleapis.com/token")
               c.refresh(Request())
               return c
 
@@ -166,51 +185,32 @@ jobs:
               if not p.exists() or p.stat().st_size <= 0:
                   raise RuntimeError(f"Video yok/boş: {video_path}")
 
-              y = build("youtube", "v3", credentials=creds(), cache_discovery=False)
+              yt = build("youtube", "v3", credentials=creds(), cache_discovery=False)
               body = {
-                  "snippet": {
-                      "title": (title or "")[:95],
-                      "description": (desc or "")[:4900],
-                      "categoryId": category_id,
-                  },
-                  "status": {
-                      "privacyStatus": privacy if privacy in {"public","unlisted","private"} else "unlisted",
-                      "selfDeclaredMadeForKids": get_bool("YT_MADE_FOR_KIDS", False),
-                  },
+                  "snippet": {"title": title[:95], "description": desc[:4900], "categoryId": category_id},
+                  "status": {"privacyStatus": privacy if privacy in {"public","unlisted","private"} else "unlisted",
+                             "selfDeclaredMadeForKids": os.getenv("YT_MADE_FOR_KIDS","false").lower() in ("1","true","yes","on")},
               }
               mime, _ = mimetypes.guess_type(str(p))
               media = MediaFileUpload(str(p), mimetype=mime or "video/mp4", chunksize=1024*1024, resumable=True)
-              req = y.videos().insert(part="snippet,status", body=body, media_body=media)
+              req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
 
-              resp = None
-              last = -1
-              start = time.monotonic()
+              resp = None; last=-1; start=time.monotonic()
               while resp is None:
                   status, resp = req.next_chunk()
                   if status and hasattr(status, "progress"):
-                      try:
-                          pct = int(float(status.progress()) * 100)
-                      except Exception:
-                          pct = None
+                      try: pct = int(float(status.progress())*100)
+                      except: pct = None
                       if pct is not None and pct != last:
-                          print(f"[upload] {pct}%")
-                          last = pct
-                  if time.monotonic() - start > 1800:
+                          print(f"[upload] {pct}%"); last=pct
+                  if time.monotonic()-start > 1800:
                       raise RuntimeError("Upload timed out (1800s)")
               dump_json("out/youtube_response.json", resp or {})
               vid = (resp or {}).get("id")
-              if not vid:
-                  raise RuntimeError("Video id dönmedi")
-              url = f"https://youtu.be/{vid}"
-              print("[done]", url)
+              if not vid: raise RuntimeError("Video id dönmedi")
+              print("[done] https://youtu.be/"+vid)
 
-          if __name__ == "__main__":
-              upload(
-                  os.environ["VIDEO_PATH"],
-                  os.environ.get("TITLE","Auto Story"),
-                  os.environ.get("DESC",""),
-                  os.environ.get("YT_PRIVACY","public"),
-              )
+          upload(os.environ["VIDEO_PATH"], os.environ.get("TITLE","Auto Story"), os.environ.get("DESC",""), os.environ.get("YT_PRIVACY","public"))
           PY
 
       - name: Upload artifact (${{ matrix.lang }})
