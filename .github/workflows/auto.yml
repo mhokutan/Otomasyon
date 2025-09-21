@@ -30,18 +30,14 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install system deps
+      - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
-
-      - name: Install Python deps
-        run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install google-api-python-client google-auth google-auth-oauthlib requests
 
-      - name: Preflight (keys)
+      - name: Preflight keys
         id: gates
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
@@ -53,116 +49,71 @@ jobs:
           if [ -n "${YT_CLIENT_ID:-}" ] && [ -n "${YT_CLIENT_SECRET:-}" ] && [ -n "${YT_REFRESH_TOKEN:-}" ]; then
             has_yt=true
           else
-            echo "::warning::YouTube secrets missing; upload will be skipped"
+            echo "::warning::YouTube secrets missing; upload skipped"
           fi
           echo "has_yt=$has_yt" >> "$GITHUB_OUTPUT"
 
       - name: Build video (STORY • ${{ matrix.lang }})
         id: build
         env:
-          THEME: "story"
           LANGUAGE: ${{ matrix.lang }}
           REGION: ${{ matrix.region }}
-          VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
-
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL != '' && vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
-          OPENAI_MODEL_CHAT: ${{ vars.OPENAI_MODEL_CHAT != '' && vars.OPENAI_MODEL_CHAT || 'gpt-4o-mini' }}
-          OPENAI_MODEL_TTS:  ${{ vars.OPENAI_MODEL_TTS  != '' && vars.OPENAI_MODEL_TTS  || 'gpt-4o-mini-tts' }}
-          OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS != '' && vars.OPENAI_MAX_TOKENS || '400' }}
-          OPENAI_TEMPERATURE: ${{ vars.OPENAI_TEMPERATURE != '' && vars.OPENAI_TEMPERATURE || '0.7' }}
-
-          TTS_VOICE: ${{ vars.TTS_VOICE != '' && vars.TTS_VOICE || 'alloy' }}
-          TTS_ATEMPO: ${{ vars.TTS_ATEMPO != '' && vars.TTS_ATEMPO || '1.07' }}
-          TTS_BITRATE: ${{ vars.TTS_BITRATE != '' && vars.TTS_BITRATE || '128k' }}
-
-          BG_IMAGES_PER_SLIDE: ${{ vars.BG_IMAGES_PER_SLIDE != '' && vars.BG_IMAGES_PER_SLIDE || '4' }}
-          FPS: ${{ vars.FPS != '' && vars.FPS || '60' }}
-          CRF: ${{ vars.CRF != '' && vars.CRF || '22' }}
-          ALLOW_NET_BG: ${{ vars.ALLOW_NET_BG != '' && vars.ALLOW_NET_BG || '0' }}
-          NET_TIMEOUT: ${{ vars.NET_TIMEOUT != '' && vars.NET_TIMEOUT || '20' }}
-          MAX_BG_SIZE_MB: ${{ vars.MAX_BG_SIZE_MB != '' && vars.MAX_BG_SIZE_MB || '8' }}
-
-          BREAKING_ON: ${{ vars.BREAKING_ON != '' && vars.BREAKING_ON || '0' }}
-          BREAKING_TEXT: ${{ vars.BREAKING_TEXT != '' && vars.BREAKING_TEXT || 'BREAKING' }}
-          PRESENTER_URL: ${{ vars.PRESENTER_URL }}
-          PRESENTER_POS: ${{ vars.PRESENTER_POS != '' && vars.PRESENTER_POS || 'top-right' }}
-          PRESENTER_SIZE: ${{ vars.PRESENTER_SIZE != '' && vars.PRESENTER_SIZE || '260' }}
-          PRESENTER_INITIALS: ${{ vars.PRESENTER_INITIALS != '' && vars.PRESENTER_INITIALS || 'AI' }}
-
-          HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
-
-          PYTHONIOENCODING: "utf-8"
-          LANG: "en_US.UTF-8"
-          PYTHONFAULTHANDLER: "1"
+          TITLE_PREFIX: ${{ matrix.title_prefix }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           mkdir -p out
           echo "== RUN =="
-          python -X dev -u -m src.main 2>&1 | tee "out/run_${{ matrix.lang }}.log" || true
+          python -X dev -u -m src.main 2>&1 | tee out/run_${{ matrix.lang }}.log || true
           echo "== OUT =="
           ls -lah out || true
-
           latest="$(ls -t out/*.mp4 2>/dev/null | head -n1 || true)"
           if [ -z "$latest" ]; then
-            echo "::error::No .mp4 produced (out/*.mp4 not found)"; exit 1
+            echo "::error::No mp4 produced"; exit 1
           fi
-          echo "Selected video: $latest"
-
+          echo "Video: $latest"
           if ! ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 "$latest" | grep -q .; then
-            echo "::error::No audio stream detected. Check out/run_${{ matrix.lang }}.log"; exit 1
+            echo "::error::No audio stream in video"; exit 1
           fi
-
           echo "video_path=$latest" >> "$GITHUB_OUTPUT"
 
-      - name: Auth smoke test (YouTube)
+      - name: Auth smoke test
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
-          python - << 'PY'
+          python - <<'PY'
           import os
           import google.auth.transport.requests
           from google.oauth2.credentials import Credentials
           creds = Credentials(
-              None,
-              refresh_token=os.environ["YT_REFRESH_TOKEN"],
-              client_id=os.environ["YT_CLIENT_ID"],
-              client_secret=os.environ["YT_CLIENT_SECRET"],
-              token_uri="https://oauth2.googleapis.com/token",
+            None,
+            refresh_token=os.environ["YT_REFRESH_TOKEN"],
+            client_id=os.environ["YT_CLIENT_ID"],
+            client_secret=os.environ["YT_CLIENT_SECRET"],
+            token_uri="https://oauth2.googleapis.com/token"
           )
           creds.refresh(google.auth.transport.requests.Request())
-          print("Refresh OK")
+          print("Auth OK")
           PY
 
       - name: Generate SEO metadata
         id: seo
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL != '' && vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
-          OPENAI_MODEL_CHAT: ${{ vars.OPENAI_MODEL_CHAT != '' && vars.OPENAI_MODEL_CHAT || 'gpt-4o-mini' }}
-          THEME: "story"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          OPENAI_MODEL_CHAT: ${{ vars.OPENAI_MODEL_CHAT || 'gpt-4o-mini' }}
           LANGUAGE: ${{ matrix.lang }}
           REGION: ${{ matrix.region }}
           TITLE_PREFIX: ${{ matrix.title_prefix }}
         run: |
           set -euo pipefail
-          python - << 'PY'
-          import os, json, re, requests, datetime, pathlib
+          python - <<'PY'
+          import os, re, json, requests, datetime, pathlib
           out_dir = pathlib.Path("out"); out_dir.mkdir(exist_ok=True)
-          def clean(s): 
-              return re.sub(r'\s+', ' ', s or '').strip()
-
-          summary = ""
-          for cand in sorted(out_dir.glob("run_*.log"), reverse=True):
-              try:
-                  txt = cand.read_text(encoding="utf-8", errors="ignore")
-                  m = re.search(r'(?:SUMMARY|KONU|TOPIC)\s*:\s*(.+)', txt, re.I)
-                  if m: summary = clean(m.group(1)); break
-              except Exception:
-                  pass
+          def clean(s): return re.sub(r'\s+', ' ', s or '').strip()
 
           lang = os.getenv("LANGUAGE","en")
           region = os.getenv("REGION","US")
@@ -171,135 +122,108 @@ jobs:
 
           prompt = f"""
           You are an expert YouTube SEO copywriter.
-          Create metadata for a short narrated story video.
-
           Language: {lang}
           Region: {region}
           Date: {today}
-          Theme: {os.getenv("THEME","story")}
-          Content hint (optional): {summary or "n/a"}
-
-          Produce:
-          - title: <= 90 chars, include 1-2 core keywords, start with "{prefix}".
-          - description: 2 short paragraphs, then 3 bullet highlights, then a call-to-action.
-            Add 8-12 relevant hashtags at the end.
-          - tags: 12-18 comma-separated keyword tags (no #).
-
-          Return strict JSON with keys: title, description, tags
+          Theme: story
+          Generate JSON with: title, description, tags
+          Title <= 90 chars, catchy but not clickbait, start with "{prefix}".
+          Description: 2 short paragraphs + 3 bullet points + CTA + 8-12 hashtags.
+          Tags: 12-18 comma separated keywords.
           """
+
           url = os.getenv("OPENAI_BASE_URL","https://api.openai.com/v1").rstrip('/') + "/chat/completions"
           headers = {"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}", "Content-Type": "application/json"}
-          body = {"model": os.getenv("OPENAI_MODEL_CHAT","gpt-4o-mini"),
-                  "messages": [{"role":"user","content":prompt}],
-                  "temperature": 0.7, "max_tokens": 450}
-          r = requests.post(url, headers=headers, json=body, timeout=60); r.raise_for_status()
-          content = r.json()["choices"][0]["message"]["content"]
-          try:
-              meta = json.loads(content)
-          except Exception:
-              m = re.search(r'\{.*\}', content, re.S)
-              meta = json.loads(m.group(0)) if m else {"title":"", "description":"", "tags":""}
+          data = {"model": os.getenv("OPENAI_MODEL_CHAT","gpt-4o-mini"),
+                  "messages":[{"role":"user","content":prompt}],
+                  "temperature":0.7,"max_tokens":400}
+          r = requests.post(url, headers=headers, json=data, timeout=60)
+          r.raise_for_status()
+          text = r.json()["choices"][0]["message"]["content"]
+          try: meta = json.loads(text)
+          except: meta = {"title":"","description":"","tags":""}
 
-          title = clean(meta.get("title",""))
-          desc = (meta.get("description","") or "").strip()
-          tags_csv = clean(meta.get("tags",""))
+          title = clean(meta.get("title") or f"{prefix} Auto Story {today}")
+          desc = meta.get("description") or f"Lang={lang}, Region={region} Auto {today}"
+          tags = clean(meta.get("tags") or "shorts,story,ai,automation")
 
-          if not title:
-              title = f"{prefix} {('Daily Auto Story' if lang!='tr' else 'Günlük Otomatik Hikaye')} ({today})"
-          if not desc:
-              desc = f"Lang={lang}, Region={region} • Auto upload {today}\n\n#shorts"
-          if not tags_csv:
-              tags_csv = "shorts,story,ai,automation"
-
-          (out_dir/"title.txt").write_text(title, encoding="utf-8")
-          (out_dir/"desc.txt").write_text(desc, encoding="utf-8")
-          (out_dir/"tags.txt").write_text(tags_csv, encoding="utf-8")
-          (out_dir/"seo_meta.json").write_text(json.dumps({"title":title,"description":desc,"tags":tags_csv}, ensure_ascii=False, indent=2), encoding="utf-8")
-          print("SEO meta created.")
+          (out_dir/"title.txt").write_text(title,encoding="utf-8")
+          (out_dir/"desc.txt").write_text(desc,encoding="utf-8")
+          (out_dir/"tags.txt").write_text(tags,encoding="utf-8")
           PY
 
-          echo "title=$(cat out/title.txt)" >> "$GITHUB_OUTPUT"
-          {
-            echo "description<<EOF"
-            cat out/desc.txt
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "tags_csv=$(cat out/tags.txt)" >> "$GITHUB_OUTPUT"
+          title=$(cat out/title.txt | sed 's/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+          desc=$(cat out/desc.txt | sed 's/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+          tags=$(cat out/tags.txt | sed 's/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+          echo "title=$title" >> $GITHUB_OUTPUT
+          echo "description=$desc" >> $GITHUB_OUTPUT
+          echo "tags_csv=$tags" >> $GITHUB_OUTPUT
 
-      - name: Upload to YouTube (${{ matrix.lang }})
+      - name: Upload to YouTube
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
           VIDEO_PATH: ${{ steps.build.outputs.video_path }}
-          SEO_TITLE: ${{ steps.seo.outputs.title }}
-          SEO_DESC: ${{ steps.seo.outputs.description }}
-          SEO_TAGS_CSV: ${{ steps.seo.outputs.tags_csv }}
-          FALLBACK_TITLE: ${{ matrix.title_prefix }} ${{ matrix.lang == 'tr' && 'Günlük Otomatik Hikaye' || 'Daily Auto Story' }}
-          FALLBACK_DESC: Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Otomasyon yüklemesi
+          TITLE: ${{ steps.seo.outputs.title }}
+          DESC: ${{ steps.seo.outputs.description }}
+          TAGS: ${{ steps.seo.outputs.tags_csv }}
+          FALLBACK_TITLE: ${{ matrix.title_prefix }} ${{ matrix.lang == 'tr' && 'Günlük Hikaye' || 'Daily Story' }}
+          FALLBACK_DESC: Lang=${{ matrix.lang }}, Region=${{ matrix.region }} Auto upload
           YT_PRIVACY: "public"
-          YT_MADE_FOR_KIDS: "false"
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
           set -euo pipefail
-          TITLE="${SEO_TITLE:-$FALLBACK_TITLE}"
-          DESC="${SEO_DESC:-$FALLBACK_DESC}"
-          TAGS="${SEO_TAGS_CSV:-shorts,ai,story}"
+          title="${TITLE:-$FALLBACK_TITLE}"
+          desc="${DESC:-$FALLBACK_DESC}"
+          tags="${TAGS:-shorts,ai,story}"
 
           echo "Uploading: $VIDEO_PATH"
-          echo "Title: $TITLE"
-          echo "Desc preview: ${DESC:0:120}..."
+          echo "Title: $title"
+          echo "Desc: ${desc:0:80}..."
 
-          TITLE="$TITLE" DESC="$DESC" TAGS="$TAGS" python - << 'PY'
-          import os, json, mimetypes, pathlib, time
+          TITLE="$title" DESC="$desc" TAGS="$tags" python - <<'PY'
+          import os, json, pathlib, time, mimetypes
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
           from google.auth.transport.requests import Request
           from google.oauth2.credentials import Credentials
 
-          vp = pathlib.Path(os.environ["VIDEO_PATH"])
-          if not vp.exists() or vp.stat().st_size<=0: raise SystemExit("Video not found: "+str(vp))
+          vp=pathlib.Path(os.environ["VIDEO_PATH"])
+          if not vp.exists(): raise SystemExit("Video not found")
 
-          tags = [t.strip() for t in os.environ.get("TAGS","").split(",") if t.strip()]
-          creds = Credentials(None,
-                              refresh_token=os.environ["YT_REFRESH_TOKEN"],
-                              client_id=os.environ["YT_CLIENT_ID"],
-                              client_secret=os.environ["YT_CLIENT_SECRET"],
-                              token_uri="https://oauth2.googleapis.com/token")
+          tags=[t.strip() for t in os.environ.get("TAGS","").split(",") if t.strip()]
+          creds=Credentials(None,
+            refresh_token=os.environ["YT_REFRESH_TOKEN"],
+            client_id=os.environ["YT_CLIENT_ID"],
+            client_secret=os.environ["YT_CLIENT_SECRET"],
+            token_uri="https://oauth2.googleapis.com/token")
           creds.refresh(Request())
-          yt = build("youtube","v3",credentials=creds, cache_discovery=False)
+          yt=build("youtube","v3",credentials=creds,cache_discovery=False)
 
-          body = {
-            "snippet": {
-              "title": os.environ["TITLE"][:95],
-              "description": os.environ["DESC"][:4900],
-              "categoryId": "22",
-              **({"tags": tags[:500]} if tags else {})
-            },
-            "status": {
-              "privacyStatus": os.environ.get("YT_PRIVACY","public"),
-              "selfDeclaredMadeForKids": os.environ.get("YT_MADE_FOR_KIDS","false").lower() in ("1","true","yes","on")
-            }
-          }
-
-          mime,_ = mimetypes.guess_type(str(vp))
-          media = MediaFileUpload(str(vp), mimetype=mime or "video/mp4", chunksize=1024*1024, resumable=True)
-          req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
-          resp=None; last=-1; start=time.monotonic()
+          body={"snippet":{
+                  "title":os.environ["TITLE"][:95],
+                  "description":os.environ["DESC"][:4900],
+                  "categoryId":"22",
+                  **({"tags":tags} if tags else {})},
+                "status":{"privacyStatus":os.environ.get("YT_PRIVACY","public")}}
+          mime,_=mimetypes.guess_type(str(vp))
+          media=MediaFileUpload(str(vp),mimetype=mime or "video/mp4",chunksize=1024*1024,resumable=True)
+          req=yt.videos().insert(part="snippet,status",body=body,media_body=media)
+          resp=None;last=-1;start=time.monotonic()
           while resp is None:
-              status, resp = req.next_chunk()
-              if status and hasattr(status,"progress"):
-                  try:
-                      pct=int(float(status.progress())*100)
-                      if pct!=last: print(f"[upload] {pct}%"); last=pct
-                  except: pass
-              if time.monotonic()-start>1800: raise RuntimeError("Upload timed out (1800s)")
+            status,resp=req.next_chunk()
+            if status and hasattr(status,"progress"):
+              try:pct=int(float(status.progress())*100); 
+              except:pct=None
+              if pct!=last: print(f"[upload]{pct}%"); last=pct
+            if time.monotonic()-start>1800: raise RuntimeError("Timeout")
           vid=(resp or {}).get("id")
-          print("Uploaded:", "https://youtu.be/"+vid if vid else "(no id)")
-          pathlib.Path("out/youtube_response.json").write_text(json.dumps(resp or {}, ensure_ascii=False, indent=2), encoding="utf-8")
+          print("Uploaded:","https://youtu.be/"+vid if vid else "(no id)")
+          pathlib.Path("out/youtube_response.json").write_text(json.dumps(resp or {},indent=2),encoding="utf-8")
           PY
 
-      - name: Upload artifact (${{ matrix.lang }})
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: output-story-${{ matrix.lang }}
