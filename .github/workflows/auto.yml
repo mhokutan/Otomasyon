@@ -1,9 +1,8 @@
 name: yt-auto-story
-
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */8 * * *"  # UTC; günde 3 kez
+    - cron: "0 */8 * * *"
 
 jobs:
   publish-story:
@@ -31,7 +30,7 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install system deps (ffmpeg & fonts)
+      - name: Install system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
@@ -54,7 +53,7 @@ jobs:
           if [ -n "${YT_CLIENT_ID:-}" ] && [ -n "${YT_CLIENT_SECRET:-}" ] && [ -n "${YT_REFRESH_TOKEN:-}" ]; then
             has_yt=true
           else
-            echo "::warning::YouTube secret'larından biri eksik; upload atlanacak"
+            echo "::warning::YouTube secrets missing; upload will be skipped"
           fi
           echo "has_yt=$has_yt" >> "$GITHUB_OUTPUT"
 
@@ -66,7 +65,6 @@ jobs:
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
 
-          # OpenAI (varsa secrets yoksa vars)
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL != '' && vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
           OPENAI_MODEL_CHAT: ${{ vars.OPENAI_MODEL_CHAT != '' && vars.OPENAI_MODEL_CHAT || 'gpt-4o-mini' }}
@@ -74,12 +72,10 @@ jobs:
           OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS != '' && vars.OPENAI_MAX_TOKENS || '400' }}
           OPENAI_TEMPERATURE: ${{ vars.OPENAI_TEMPERATURE != '' && vars.OPENAI_TEMPERATURE || '0.7' }}
 
-          # TTS
           TTS_VOICE: ${{ vars.TTS_VOICE != '' && vars.TTS_VOICE || 'alloy' }}
           TTS_ATEMPO: ${{ vars.TTS_ATEMPO != '' && vars.TTS_ATEMPO || '1.07' }}
           TTS_BITRATE: ${{ vars.TTS_BITRATE != '' && vars.TTS_BITRATE || '128k' }}
 
-          # Video
           BG_IMAGES_PER_SLIDE: ${{ vars.BG_IMAGES_PER_SLIDE != '' && vars.BG_IMAGES_PER_SLIDE || '4' }}
           FPS: ${{ vars.FPS != '' && vars.FPS || '60' }}
           CRF: ${{ vars.CRF != '' && vars.CRF || '22' }}
@@ -87,7 +83,6 @@ jobs:
           NET_TIMEOUT: ${{ vars.NET_TIMEOUT != '' && vars.NET_TIMEOUT || '20' }}
           MAX_BG_SIZE_MB: ${{ vars.MAX_BG_SIZE_MB != '' && vars.MAX_BG_SIZE_MB || '8' }}
 
-          # Presenter
           BREAKING_ON: ${{ vars.BREAKING_ON != '' && vars.BREAKING_ON || '0' }}
           BREAKING_TEXT: ${{ vars.BREAKING_TEXT != '' && vars.BREAKING_TEXT || 'BREAKING' }}
           PRESENTER_URL: ${{ vars.PRESENTER_URL }}
@@ -110,14 +105,12 @@ jobs:
 
           latest="$(ls -t out/*.mp4 2>/dev/null | head -n1 || true)"
           if [ -z "$latest" ]; then
-            echo "::error::Hiç .mp4 üretilmemiş görünüyor (out/*.mp4 bulunamadı)"; exit 1
+            echo "::error::No .mp4 produced (out/*.mp4 not found)"; exit 1
           fi
-          echo "Seçilen video: $latest"
+          echo "Selected video: $latest"
 
-          # Audio var mı?
           if ! ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 "$latest" | grep -q .; then
-            echo "::error::Videoda audio stream yok. TTS başarısız olmuş olabilir. out/run_${{ matrix.lang }}.log dosyasını kontrol edin."
-            exit 1
+            echo "::error::No audio stream detected. Check out/run_${{ matrix.lang }}.log"; exit 1
           fi
 
           echo "video_path=$latest" >> "$GITHUB_OUTPUT"
@@ -160,10 +153,8 @@ jobs:
           import os, json, re, requests, datetime, pathlib
           out_dir = pathlib.Path("out"); out_dir.mkdir(exist_ok=True)
           def clean(s): 
-              import re
               return re.sub(r'\s+', ' ', s or '').strip()
 
-          # build log'dan kısa konu ipucu (opsiyonel)
           summary = ""
           for cand in sorted(out_dir.glob("run_*.log"), reverse=True):
               try:
@@ -189,10 +180,10 @@ jobs:
           Content hint (optional): {summary or "n/a"}
 
           Produce:
-          - title: ≤ 90 chars, clicky but not clickbait, include 1–2 core keywords, start with "{prefix}". Add an emoji only if natural.
+          - title: <= 90 chars, include 1-2 core keywords, start with "{prefix}".
           - description: 2 short paragraphs, then 3 bullet highlights, then a call-to-action.
-            Add 8–12 relevant hashtags at the end (language-appropriate).
-          - tags: 12–18 comma-separated keyword tags (no #), from generic→specific, language-appropriate.
+            Add 8-12 relevant hashtags at the end.
+          - tags: 12-18 comma-separated keyword tags (no #).
 
           Return strict JSON with keys: title, description, tags
           """
@@ -214,7 +205,7 @@ jobs:
           tags_csv = clean(meta.get("tags",""))
 
           if not title:
-              title = f"{prefix} {('Günlük Otomatik Hikaye' if lang=='tr' else 'Daily Auto Story')} ({today})"
+              title = f"{prefix} {('Daily Auto Story' if lang!='tr' else 'Günlük Otomatik Hikaye')} ({today})"
           if not desc:
               desc = f"Lang={lang}, Region={region} • Auto upload {today}\n\n#shorts"
           if not tags_csv:
@@ -227,7 +218,6 @@ jobs:
           print("SEO meta created.")
           PY
 
-          # GitHub Outputs’a yaz
           echo "title=$(cat out/title.txt)" >> "$GITHUB_OUTPUT"
           {
             echo "description<<EOF"
@@ -256,11 +246,11 @@ jobs:
           DESC="${SEO_DESC:-$FALLBACK_DESC}"
           TAGS="${SEO_TAGS_CSV:-shorts,ai,story}"
 
-          echo "Yüklenecek: $VIDEO_PATH"
-          echo "Başlık: $TITLE"
-          echo "İlk 120 desc: ${DESC:0:120}..."
+          echo "Uploading: $VIDEO_PATH"
+          echo "Title: $TITLE"
+          echo "Desc preview: ${DESC:0:120}..."
 
-          python - << 'PY'
+          TITLE="$TITLE" DESC="$DESC" TAGS="$TAGS" python - << 'PY'
           import os, json, mimetypes, pathlib, time
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
@@ -268,7 +258,7 @@ jobs:
           from google.oauth2.credentials import Credentials
 
           vp = pathlib.Path(os.environ["VIDEO_PATH"])
-          if not vp.exists() or vp.stat().st_size<=0: raise SystemExit("Video bulunamadı: "+str(vp))
+          if not vp.exists() or vp.stat().st_size<=0: raise SystemExit("Video not found: "+str(vp))
 
           tags = [t.strip() for t in os.environ.get("TAGS","").split(",") if t.strip()]
           creds = Credentials(None,
@@ -305,13 +295,9 @@ jobs:
                   except: pass
               if time.monotonic()-start>1800: raise RuntimeError("Upload timed out (1800s)")
           vid=(resp or {}).get("id")
-          print("Uploaded:", "https://youtu.be/"+vid if vid else "(id yok)")
+          print("Uploaded:", "https://youtu.be/"+vid if vid else "(no id)")
           pathlib.Path("out/youtube_response.json").write_text(json.dumps(resp or {}, ensure_ascii=False, indent=2), encoding="utf-8")
           PY
-        env:
-          TITLE: ${{ env.TITLE || '' }}
-          DESC: ${{ env.DESC || '' }}
-          TAGS: ${{ env.TAGS || '' }}
 
       - name: Upload artifact (${{ matrix.lang }})
         uses: actions/upload-artifact@v4
