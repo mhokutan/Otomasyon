@@ -128,47 +128,29 @@ def _rss_top_titles(url: str, n: int = 5) -> List[Tuple[str, str]]:
 
 # ---------- Story / News / Crypto scripts (longer) ----------
 def make_script_story(topic: Optional[str], language: str="en") -> Tuple[str, List[str]]:
+    """
+    Story is forced to EN (we ignore 'language' to disable TR variant intentionally).
+    """
     t = (topic or "mystery").strip().title()
-    if language.startswith("tr"):
-        lines = [
-            f"[ON SCREEN TEXT: \"{t}\"]",
-            f"[HOOK] {t} temalı kısa bir öykü: gizemli bir başlangıç...",
-            "[CUT] Sisli bir sokakta unutulmuş bir not.",
-            "[CUT] Nottaki sembol, eski bir kitabın kapağındakiyle aynı.",
-            "[CUT] Kapı çalar; geçmişten gelen bir ziyaretçi.",
-            "[CUT] Bir sır: kayıp anahtar ve iki farklı kapı.",
-            "[CUT] İlk kapı; kolay olan. İkincisi; doğru olan.",
-            "[CUT] Tereddüt: Zaman daralıyor.",
-            "[CUT] Seçim yapıldı; sonuç beklenenden farklı.",
-            "[CUT] Bir iz sürülür, yollar ayrılır.",
-            "[CUT] Geriye kalan: cesaret ve sessizlik.",
-            "[TIP] Kısa not: bazen doğru cevap, en zor olana bakabilmektir.",
-            "[CTA] Her gün yeni bölüm için abone ol!"
-        ]
-        caps = [
-            f"{t} — kısa hikâye","Sisli sokak","Eski sembol","Ziyaretçi",
-            "İki kapı","Seçim","Sonuç","İz sürme","Cesaret"
-        ]
-    else:
-        lines = [
-            f"[ON SCREEN TEXT: \"{t}\"]",
-            f"[HOOK] A short {t.lower()} tale: a mysterious beginning...",
-            "[CUT] A foggy alley and a forgotten note.",
-            "[CUT] The symbol matches an old book’s cover.",
-            "[CUT] A knock: a visitor from the past.",
-            "[CUT] A secret: the lost key and two doors.",
-            "[CUT] First door—easy. Second—right.",
-            "[CUT] Hesitation; time runs out.",
-            "[CUT] Choice made; an unexpected outcome.",
-            "[CUT] A trail to follow; paths diverge.",
-            "[CUT] What remains: courage and silence.",
-            "[TIP] Sometimes the right answer is the hardest to face.",
-            "[CTA] Subscribe for the next episode!"
-        ]
-        caps = [
-            f"{t} — short story","Foggy alley","Old symbol","Visitor",
-            "Two doors","The choice","Outcome","Trail","Courage"
-        ]
+    lines = [
+        f"[ON SCREEN TEXT: \"{t}\"]",
+        f"[HOOK] A short {t.lower()} tale: a mysterious beginning...",
+        "[CUT] A foggy alley and a forgotten note.",
+        "[CUT] The symbol matches an old book’s cover.",
+        "[CUT] A knock: a visitor from the past.",
+        "[CUT] A secret: the lost key and two doors.",
+        "[CUT] First door—easy. Second—right.",
+        "[CUT] Hesitation; time runs out.",
+        "[CUT] Choice made; an unexpected outcome.",
+        "[CUT] A trail to follow; paths diverge.",
+        "[CUT] What remains: courage and silence.",
+        "[TIP] Sometimes the right answer is the hardest to face.",
+        "[CTA] Subscribe for the next episode!",
+    ]
+    caps = [
+        f"{t} — short story","Foggy alley","Old symbol","Visitor",
+        "Two doors","The choice","Outcome","Trail","Courage",
+    ]
     return "\n".join(lines), caps
 
 def make_script_news(headlines: List[Tuple[str, str]], language: str="en") -> Tuple[str, List[str]]:
@@ -330,12 +312,15 @@ def generate_script(mode: str,
                     story_topic: Optional[str] = None,
                     **ignored: Any
                     ) -> Tuple[str, List[str], Optional[Dict[str, Dict[str, float]]]]:
+    # Keep env fallbacks but force EN for story mode to disable TR variant.
     language = (language or _env("LANGUAGE", "en")).lower()
     _ = region or _env("REGION", "US")
     mode = (mode or _env("THEME", "story")).lower()
 
     if mode == "story":
-        return make_script_story(story_topic, language=language) + (None,)
+        # Force English output regardless of env
+        s, caps = make_script_story(story_topic, language="en")
+        return s, caps, None
 
     if mode == "crypto":
         coins_list = coins or [c.strip() for c in (_env("CRYPTO_COINS","bitcoin,ethereum,solana") or "").split(",") if c.strip()]
