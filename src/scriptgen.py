@@ -1,50 +1,43 @@
 # -*- coding: utf-8 -*-
 """
-Helpers for the YouTube auto workflow (compat layer).
+Series-aware script & SEO metadata generator.
 
-Exposed functions:
-- generate_script(mode, language=None, region=None, rss_url=None, coins=None,
-                  coin_rows=None, rss_limit=None, story_topic=None, **ignored)
-    -> (script_text, captions_list, coins_data_or_none)
+- generate_script(mode, language, region, rss_url, story_topic, ...)
+  -> (script_text, captions_list, coins_data_or_none)
 
-- build_titles(mode, captions=None, coins_data=None, title_prefix=None,
-               coin_rows=None, headlines=None, **ignored)
-    -> Returns a TitleMetadata object with `title`, `description`, `captions`.
-       When only captions are generated (coin_rows/headlines), `title` and
-       `description` will be ``None``.
+- build_titles(mode, captions, coins_data, title_prefix, ...)
+  -> TitleMetadata(title, description, captions, tags)
 
-- fetch_trends_tr(n=3)
-- make_script_tr(headlines)
-- make_script_crypto(coins_data, language="en")
-- _fetch_headlines_from_rss(url, limit=3)
+Env knobs (optional):
+- SERIES_NAME="Mystery Files"
+- SERIES_SEASON="1"
+- SERIES_LANG_KEY defaults to LANGUAGE (so en/tr run independent counters)
+- MIN_SEC_PER_CAPTION (float, default 4.0)
 """
 
 from __future__ import annotations
-import os
-import time
-import textwrap
+import os, time, textwrap, math
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Optional, Any, Iterator
-
-import logging
-
-import requests
-
+import logging, requests
 try:
     import feedparser  # type: ignore
     _HAS_FEEDPARSER = True
 except Exception:
     _HAS_FEEDPARSER = False
-
 import xml.etree.ElementTree as ET
 
-
 logger = logging.getLogger(__name__)
-
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     v = os.getenv(name)
     return v if (v is not None and str(v).strip() != "") else default
+
+def _now_ts() -> str:
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+
+def _clean_text(s: str) -> str:
+    return " ".join((s or "").replace("\r"," ").replace("\n"," ").split())
 
 def _fmt_usd(x: float) -> str:
     return f"${x:,.2f}"
@@ -53,18 +46,32 @@ def _fmt_pct(x: float) -> str:
     sign = "+" if x >= 0 else ""
     return f"{sign}{x:.2f}%"
 
-def _clean_text(s: str) -> str:
-    return " ".join((s or "").replace("\r", " ").replace("\n", " ").split())
-
 def _safe_first(items: List, n: int) -> List:
     return items[:n] if items else []
 
-def _now_ts() -> str:
-    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+# ---------- Series helpers ----------
+def _series_name() -> str:
+    return _env("SERIES_NAME", "Mystery Files") or "Mystery Files"
 
+def _series_season() -> int:
+    try:
+        return int(_env("SERIES_SEASON", "1") or "1")
+    except Exception:
+        return 1
 
-# ------------------ CRYPTO ------------------
+def _series_episode(language: str) -> int:
+    """
+    Deterministic daily ep number per language key.
+    E.g., en and tr sequences advance independently.
+    """
+    lang_key = (_env("SERIES_LANG_KEY") or language or "en").lower()
+    # day count since 2025-01-01
+    yday = int(time.strftime("%j", time.gmtime()))
+    year = int(time.strftime("%Y", time.gmtime()))
+    base = 1000 if lang_key.startswith("tr") else 0
+    return (year * 400 + yday + base)  # monotonically increasing
 
+# ---------- Crypto fetch ----------
 def fetch_crypto_simple(coin_ids: List[str]) -> Dict[str, Dict[str, float]]:
     ids = ",".join(coin_ids)
     url = (
@@ -82,62 +89,14 @@ def fetch_crypto_simple(coin_ids: List[str]) -> Dict[str, Dict[str, float]]:
             out[cid] = {"usd": price, "usd_24h_change": chg}
     return out
 
-def make_script_crypto(coins_data: Dict[str, Dict[str, float]], language: str = "en") -> Tuple[str, List[str]]:
-    if not coins_data:
-        if language.lower().startswith("tr"):
-            return ("[ON SCREEN TEXT] Kripto özeti (veri alınamadı)\n[CTA] Takipte kal!",
-                    ["Kripto özeti (veri alınamadı)"])
-        return ("[ON SCREEN TEXT] 60-second crypto brief (no data)\n[CTA] Subscribe for daily briefs!",
-                ["60-second crypto brief (no data)"])
-
-    order_env = _env("CRYPTO_COINS", "bitcoin,ethereum,solana")
-    order = [c.strip() for c in (order_env or "").split(",") if c.strip()]
-    ordered = [c for c in order if c in coins_data] or list(coins_data.keys())
-
-    lines: List[str] = []
-    caps: List[str] = []
-
-    if language.lower().startswith("tr"):
-        lines.append("[ON SCREEN TEXT] Kripto Günlük Özeti")
-        lines.append("[HOOK] Bitcoin, Ethereum ve seçili altcoinlerde son 24 saatin özeti!")
-    else:
-        lines.append("[ON SCREEN TEXT] 60-second crypto brief")
-        lines.append("[HOOK] Bitcoin, Ethereum and top altcoins — here is your 60-second market brief!")
-
-    for cid in ordered:
-        d = coins_data[cid]
-        name = cid.upper()
-        price = _fmt_usd(d["usd"])
-        pct = _fmt_pct(d["usd_24h_change"])
-        if language.lower().startswith("tr"):
-            dir_tr = "yukarı" if d["usd_24h_change"] >= 0 else "aşağı"
-            line = f"[CUT] {name}: {price}, 24 saatte {pct} {dir_tr}."
-        else:
-            dir_en = "up" if d["usd_24h_change"] >= 0 else "down"
-            line = f"[CUT] {name}: {price}, 24h {pct} {dir_en}."
-        cap = f"{name}: {price} | 24h {pct}"
-        lines.append(line)
-        caps.append(cap)
-
-    if language.lower().startswith("tr"):
-        lines.append("[TIP] Yatırım tavsiyesi değildir. Volatiliteye dikkat.")
-        lines.append("[CTA] Günlük kısa özet için abone ol!")
-    else:
-        lines.append("[TIP] Not financial advice. Mind the volatility.")
-        lines.append("[CTA] Subscribe for a short daily brief!")
-
-    return "\n".join(lines), caps
-
-
-# ------------------ NEWS / SPORTS ------------------
-
-def _rss_top_titles(url: str, n: int = 3) -> List[Tuple[str, str]]:
+# ---------- News helpers ----------
+def _rss_top_titles(url: str, n: int = 5) -> List[Tuple[str, str]]:
     titles: List[Tuple[str, str]] = []
     if _HAS_FEEDPARSER:
         try:
             feed = feedparser.parse(url)
-        except Exception as exc:  # pragma: no cover - feedparser robustness
-            logger.warning("RSS feedparser failed for %s: %s", url, exc)
+        except Exception as exc:
+            logger.warning("RSS feedparser failed: %s", exc)
             return titles
         for e in _safe_first(getattr(feed, "entries", []), n):
             t = _clean_text(getattr(e, "title", "") or "")
@@ -150,170 +109,141 @@ def _rss_top_titles(url: str, n: int = 3) -> List[Tuple[str, str]]:
         r = requests.get(url, timeout=20)
         r.raise_for_status()
     except requests.RequestException as exc:
-        logger.warning("RSS request failed for %s: %s", url, exc)
+        logger.warning("RSS request failed: %s", exc)
         return titles
 
     try:
         root = ET.fromstring(r.content)
     except ET.ParseError as exc:
-        logger.warning("RSS XML parse failed for %s: %s", url, exc)
+        logger.warning("RSS XML parse failed: %s", exc)
         return titles
 
     for item in root.findall(".//item"):
         t = _clean_text(item.findtext("title") or "")
         l = item.findtext("link") or ""
-        if t:
-            titles.append((t, l))
+        if t: titles.append((t, l))
         if len(titles) >= n:
-            return titles
-
-    for ent in root.findall(".//{*}entry"):
-        tnode = ent.find("{*}title")
-        lnode = ent.find("{*}link")
-        t = _clean_text(tnode.text if (tnode is not None and tnode.text) else "")
-        l = ""
-        if lnode is not None:
-            l = lnode.get("href") or lnode.text or ""
-        if t:
-            titles.append((t, l))
-        if len(titles) >= n:
-            return titles
-
+            break
     return titles[:n]
 
-def _fetch_headlines_from_rss(url: str, limit: int = 12) -> List[Tuple[str, str]]:
-    return _rss_top_titles(url, n=limit)
-
-def make_script_news(headlines: List[Tuple[str, str]], language: str = "en") -> Tuple[str, List[str]]:
-    if not headlines:
-        if language.lower().startswith("tr"):
-            return ("[ON SCREEN TEXT] 60 saniyelik özet (haber bulunamadı)\n[CTA] Takipte kal!",
-                    ["60 saniyelik özet (haber bulunamadı)"])
-        return ("[ON SCREEN TEXT] 60-second brief (no headlines)\n[CTA] Subscribe for daily briefs!",
-                ["60-second brief (no headlines)"])
-
-    lines: List[str] = []
-    caps: List[str] = []
-
-    if language.lower().startswith("tr"):
-        lines.append("[ON SCREEN TEXT] 60 saniyelik özet")
-        lines.append(f"[HOOK] {headlines[0][0]} — haydi başlayalım!")
-    else:
-        lines.append("[ON SCREEN TEXT] 60-second brief")
-        lines.append(f"[HOOK] {headlines[0][0]} — let’s go!")
-
-    for i, (t, _) in enumerate(_safe_first(headlines, 3), start=1):
-        lines.append(f"[CUT] {i}. {t}")
-        caps.append(t)
-
-    if language.lower().startswith("tr"):
-        lines.append("[CUT] 10 saniye kaldı; kısaca: Günün gelişmelerini tarayıp en net başlıkları seçiyoruz.")
-        lines.append("[CTA] Her gün yeni 1 dakikalık özet için abone ol!")
-    else:
-        lines.append("[CUT] 10 seconds left; quick recap: we track the day’s developments and pick the clearest headlines.")
-        lines.append("[CTA] New 1-minute summaries every day—subscribe!")
-
-    return "\n".join(lines), caps
-
-
-# ------------------ (optional) STORY ------------------
-
+# ---------- Story / News / Crypto scripts (longer) ----------
 def make_script_story(topic: Optional[str], language: str="en") -> Tuple[str, List[str]]:
-    t = (topic or "mystery").strip()
-    if language.lower().startswith("tr"):
+    t = (topic or "mystery").strip().title()
+    if language.startswith("tr"):
         lines = [
-            f"[ON SCREEN TEXT: \"{t.title()}\"]",
-            f"[HOOK] {t.title()} temalı kısa bir hikâye: gizemli bir başlangıç...",
-            "[CUT] Eski bir kitap, kapakta silik bir sembol.",
-            "[CUT] Beklenmedik bir ziyaretçi ve açığa çıkan sır.",
-            "[ON SCREEN TEXT: “Seçim Anı”]",
-            "[CUT] Bir karar, iki kader.",
-            "[CTA] Devamı için abone ol; her gün yeni kısa hikâyeler!"
+            f"[ON SCREEN TEXT: \"{t}\"]",
+            f"[HOOK] {t} temalı kısa bir öykü: gizemli bir başlangıç...",
+            "[CUT] Sisli bir sokakta unutulmuş bir not.",
+            "[CUT] Nottaki sembol, eski bir kitabın kapağındakiyle aynı.",
+            "[CUT] Kapı çalar; geçmişten gelen bir ziyaretçi.",
+            "[CUT] Bir sır: kayıp anahtar ve iki farklı kapı.",
+            "[CUT] İlk kapı; kolay olan. İkincisi; doğru olan.",
+            "[CUT] Tereddüt: Zaman daralıyor.",
+            "[CUT] Seçim yapıldı; sonuç beklenenden farklı.",
+            "[CUT] Bir iz sürülür, yollar ayrılır.",
+            "[CUT] Geriye kalan: cesaret ve sessizlik.",
+            "[TIP] Kısa not: bazen doğru cevap, en zor olana bakabilmektir.",
+            "[CTA] Her gün yeni bölüm için abone ol!"
+        ]
+        caps = [
+            f"{t} — kısa hikâye","Sisli sokak","Eski sembol","Ziyaretçi",
+            "İki kapı","Seçim","Sonuç","İz sürme","Cesaret"
         ]
     else:
         lines = [
-            f"[ON SCREEN TEXT: \"{t.title()}\"]",
-            f"[HOOK] A short {t} story: a mysterious beginning...",
-            "[CUT] An old book, a faded sigil on the cover.",
-            "[CUT] An unexpected visitor and a revealed secret.",
-            "[ON SCREEN TEXT: “The Turning Point”]",
-            "[CUT] One decision, two destinies.",
-            "[CTA] Subscribe for daily short stories!"
+            f"[ON SCREEN TEXT: \"{t}\"]",
+            f"[HOOK] A short {t.lower()} tale: a mysterious beginning...",
+            "[CUT] A foggy alley and a forgotten note.",
+            "[CUT] The symbol matches an old book’s cover.",
+            "[CUT] A knock: a visitor from the past.",
+            "[CUT] A secret: the lost key and two doors.",
+            "[CUT] First door—easy. Second—right.",
+            "[CUT] Hesitation; time runs out.",
+            "[CUT] Choice made; an unexpected outcome.",
+            "[CUT] A trail to follow; paths diverge.",
+            "[CUT] What remains: courage and silence.",
+            "[TIP] Sometimes the right answer is the hardest to face.",
+            "[CTA] Subscribe for the next episode!"
         ]
-    # captions
-    caps = [
-        f"{t.title()} — short story",
-        "A mysterious beginning",
-        "An unexpected visitor",
-        "The turning point"
-    ]
+        caps = [
+            f"{t} — short story","Foggy alley","Old symbol","Visitor",
+            "Two doors","The choice","Outcome","Trail","Courage"
+        ]
     return "\n".join(lines), caps
 
+def make_script_news(headlines: List[Tuple[str, str]], language: str="en") -> Tuple[str, List[str]]:
+    if not headlines:
+        return ("[ON SCREEN TEXT] 60-second brief (no headlines)\n[CTA] Subscribe!", ["60-second brief"])
+    titles = [h[0] for h in headlines]
+    if language.startswith("tr"):
+        lines = ["[ON SCREEN TEXT] 60 saniyelik özet", f"[HOOK] {titles[0]} — başlayalım!"]
+        for i, t in enumerate(_safe_first(titles, 6), 1):
+            lines.append(f"[CUT] {i}. {t}")
+        lines += ["[CUT] Kısa tekrar ve kapanış.", "[CTA] Her gün 1 dakikalık özetler için abone ol!"]
+    else:
+        lines = ["[ON SCREEN TEXT] 60-second brief", f"[HOOK] {titles[0]} — let’s go!"]
+        for i, t in enumerate(_safe_first(titles, 6), 1):
+            lines.append(f"[CUT] {i}. {t}")
+        lines += ["[CUT] Quick recap and closing.", "[CTA] New 1-minute briefs daily—subscribe!"]
+    return "\n".join(lines), _safe_first(titles, 6)
 
-# ------------------ Titles / Descriptions ------------------
+def make_script_crypto(coins_data: Dict[str, Dict[str, float]], language: str="en") -> Tuple[str, List[str]]:
+    if not coins_data:
+        if language.startswith("tr"):
+            return ("[ON SCREEN TEXT] Kripto özeti (veri alınamadı)\n[CTA] Takipte kal!", ["Kripto özeti (veri yok)"])
+        return ("[ON SCREEN TEXT] Crypto brief (no data)\n[CTA] Subscribe!", ["Crypto brief"])
+    order_env = _env("CRYPTO_COINS", "bitcoin,ethereum,solana")
+    order = [c.strip() for c in (order_env or "").split(",") if c.strip()]
+    ordered = [c for c in order if c in coins_data] or list(coins_data.keys())
 
+    caps: List[str] = []
+    lines: List[str] = []
+    if language.startswith("tr"):
+        lines += ["[ON SCREEN TEXT] Kripto Günlük Özeti", "[HOOK] BTC, ETH ve seçili altcoinlerde son 24 saat..."]
+    else:
+        lines += ["[ON SCREEN TEXT] Daily Crypto Brief", "[HOOK] BTC, ETH and top alts — last 24h..."]
+
+    for cid in ordered:
+        d = coins_data[cid]
+        name = cid.upper()
+        price = _fmt_usd(d["usd"]); pct = _fmt_pct(d["usd_24h_change"])
+        if language.startswith("tr"):
+            dir_tr = "yukarı" if d["usd_24h_change"] >= 0 else "aşağı"
+            lines.append(f"[CUT] {name}: {price}, 24 saatte {pct} {dir_tr}.")
+        else:
+            dir_en = "up" if d["usd_24h_change"] >= 0 else "down"
+            lines.append(f"[CUT] {name}: {price}, 24h {pct} {dir_en}.")
+        caps.append(f"{name}: {price} | 24h {pct}")
+
+    lines += (["[TIP] Yatırım tavsiyesi değildir.", "[CTA] Günlük özet için abone ol!"]
+              if language.startswith("tr")
+              else ["[TIP] Not financial advice.", "[CTA] Subscribe for the daily brief!"])
+    return "\n".join(lines), caps
+
+# ---------- SEO metadata ----------
 @dataclass
 class TitleMetadata:
     title: Optional[str] = None
     description: Optional[str] = None
     captions: List[str] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        if self.captions is None:
-            self.captions = []
-        elif isinstance(self.captions, str):
-            self.captions = [str(self.captions)]
-        else:
-            self.captions = [str(c) for c in list(self.captions)]
+        self.captions = [str(c) for c in (self.captions or [])]
+        self.tags = [t.strip() for t in (self.tags or []) if t and t.strip()]
 
-    def as_tuple(self) -> Tuple[Optional[str], Optional[str]]:
+    def as_tuple(self):
         return self.title, self.description
-
-    def __iter__(self) -> Iterator[Optional[str]]:
-        return iter(self.as_tuple())
-
-
-def _coins_from_rows(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
-    out: Dict[str, Dict[str, float]] = {}
-    for r in rows or []:
-        cid = str(r.get("id") or r.get("coin") or "").strip().lower()
-        if not cid:
-            continue
-        try:
-            usd = float(r.get("usd"))
-            chg = float(r.get("usd_24h_change", 0.0))
-        except Exception:
-            continue
-        out[cid] = {"usd": usd, "usd_24h_change": chg}
-    return out
 
 def build_titles(mode: str,
                  captions: Optional[List[str]] = None,
                  coins_data: Optional[Dict[str, Dict[str, float]]] = None,
                  title_prefix: Optional[str] = None,
-                 coin_rows: Optional[List[Dict[str, Any]]] = None,
-                 headlines: Optional[List[Tuple[str, str]]] = None,
                  **ignored: Any) -> TitleMetadata:
     mode_l = (mode or "").lower()
-
-    if coin_rows is not None:
-        data = _coins_from_rows(coin_rows)
-        if not data:
-            return TitleMetadata(captions=[])
-        order_env = _env("CRYPTO_COINS", "bitcoin,ethereum,solana")
-        order = [c.strip() for c in (order_env or "").split(",") if c.strip()]
-        ordered = [c for c in order if c in data] or list(data.keys())
-        caps = [
-            f"{cid.upper()}: {_fmt_usd(data[cid]['usd'])} | 24h {_fmt_pct(data[cid]['usd_24h_change'])}"
-            for cid in ordered
-        ]
-        return TitleMetadata(captions=caps)
-
-    if headlines is not None:
-        caps = [t for (t, _link) in (headlines[:5] if headlines else [])]
-        return TitleMetadata(captions=caps)
-
+    language = (_env("LANGUAGE","en") or "en").lower()
     ts = _now_ts()
+
     if not title_prefix:
         title_prefix = {
             "crypto": "Daily Crypto Brief:",
@@ -322,59 +252,74 @@ def build_titles(mode: str,
             "story": "Story:"
         }.get(mode_l, "Daily Brief:")
 
-    if captions is None:
-        provided_captions: List[str] = []
-    elif isinstance(captions, str):
-        provided_captions = [str(captions)]
+    provided_caps = [str(c) for c in (captions or [])]
+    main_part = provided_caps[0] if provided_caps else (
+        "Crypto market update" if mode_l=="crypto" else
+        ("A short story" if mode_l=="story" else "Top headlines")
+    )
+
+    series = _series_name()
+    season = _series_season()
+    episode = _series_episode(language)
+    # Title
+    title = f"{series} S{season:02d}E{episode}: {main_part}"
+    if title_prefix and not title.lower().startswith(title_prefix.lower()):
+        title = f"{title_prefix} {title}"
+    if len(title) > 95: title = title[:92] + "..."
+
+    # Description
+    p_intro = (
+        f"This video is part of the “{series}” daily series. "
+        f"Episode {episode} (Season {season})."
+        if not language.startswith("tr") else
+        f"Bu video “{series}” günlük serisinin bir parçası. "
+        f"{episode}. bölüm (Sezon {season})."
+    )
+
+    bullets = "\n".join([f"• {c}" for c in _safe_first(provided_caps, 5)]) if provided_caps else ""
+    if language.startswith("tr"):
+        p_body = "Kısa ve akılda kalıcı bir bölüm; her gün yeni bir bölüm paylaşıyoruz."
+        cta = "👉 Beğenmeyi ve abone olmayı unutmayın!"
+        hashtags = "#shorts #hikaye #gizem #gündem #ai"
     else:
-        provided_captions = [str(c) for c in list(captions)]
+        p_body = "A punchy, easy-to-follow episode; we publish a new one every day."
+        cta = "👉 Like & subscribe for more!"
+        hashtags = "#shorts #story #news #crypto #ai"
 
-    main_part = (provided_captions[0] if provided_captions else
-                 ("Crypto market update" if mode_l == "crypto" else
-                  ("A short story" if mode_l == "story" else "Top headlines")))
-    title = f"{title_prefix} {main_part}"
-    if len(title) > 95:
-        title = title[:92] + "..."
+    chapters = [
+        "0:00 Intro",
+        "0:05 Main beats",
+        "0:50 Wrap-up"
+    ]
+    desc = textwrap.dedent(f"""\
+        {p_intro}
+        {p_body}
 
-    if mode_l == "crypto" and coins_data:
-        rows = []
-        for cid, d in coins_data.items():
-            rows.append(f"{cid.upper()}: {_fmt_usd(d['usd'])} ({_fmt_pct(d['usd_24h_change'])})")
-        block = "\n".join(rows)
-        desc = textwrap.dedent(f"""\
-            Auto-generated {mode_l} video — {ts}
+        Highlights:
+        {bullets}
 
-            Prices:
-            {block}
+        Chapters:
+        {chr(10).join(chapters)}
 
-            Chapters:
-            0:00 Intro
-            0:05 BTC / ETH / SOL
-            0:45 Outro
+        {cta}
 
-            #crypto #bitcoin #ethereum #solana #ai #shorts
-        """).strip()
-    else:
-        bullets = "\n".join([f"- {c}" for c in _safe_first(provided_captions, 5)])
-        desc = textwrap.dedent(f"""\
-            Auto-generated {mode_l or 'news'} video — {ts}
+        {hashtags}
+    """).strip()
 
-            Highlights:
-            {bullets}
+    # Tags
+    base_tags = [
+        "shorts","daily","series", series.lower().replace(" ",""),
+        "ai","auto","story" if mode_l=="story" else mode_l
+    ]
+    if mode_l=="crypto":
+        base_tags += ["bitcoin","ethereum","solana","market","price","update"]
+    elif mode_l=="news":
+        base_tags += ["news","headlines","today"]
+    tags = list(dict.fromkeys([t for t in base_tags if t]))[:18]
 
-            Chapters:
-            0:00 Intro
-            0:05 Key points
-            0:45 Outro
+    return TitleMetadata(title=title, description=desc, captions=provided_caps, tags=tags)
 
-            #news #sports #story #ai #shorts
-        """).strip()
-
-    return TitleMetadata(title=title, description=desc, captions=provided_captions)
-
-
-# ------------------ Orchestrator ------------------
-
+# ---------- Orchestrator ----------
 def generate_script(mode: str,
                     language: Optional[str] = None,
                     region: Optional[str] = None,
@@ -387,61 +332,22 @@ def generate_script(mode: str,
                     ) -> Tuple[str, List[str], Optional[Dict[str, Dict[str, float]]]]:
     language = (language or _env("LANGUAGE", "en")).lower()
     _ = region or _env("REGION", "US")
-    mode = (mode or _env("THEME", "crypto")).lower()
+    mode = (mode or _env("THEME", "story")).lower()
 
     if mode == "story":
-        s, caps = make_script_story(story_topic, language=language)
-        return s, caps, None
+        return make_script_story(story_topic, language=language) + (None,)
 
     if mode == "crypto":
-        if coin_rows:
-            data = _coins_from_rows(coin_rows)
-        else:
-            coin_list = coins
-            if not coin_list:
-                coin_list = [c.strip() for c in (_env("CRYPTO_COINS", "bitcoin,ethereum,solana") or "").split(",") if c.strip()]
-            data = fetch_crypto_simple(coin_list)
-        script, caps = make_script_crypto(data, language=language)
-        return script, caps, data
+        coins_list = coins or [c.strip() for c in (_env("CRYPTO_COINS","bitcoin,ethereum,solana") or "").split(",") if c.strip()]
+        data = fetch_crypto_simple(coins_list)
+        s, caps = make_script_crypto(data, language=language)
+        return s, caps, data
 
-    # news/sports
+    # news / sports via RSS
     url = rss_url or _env("RSS_URL", "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en")
-    n = rss_limit or 3
-    heads = _rss_top_titles(url, n=n)
+    heads = _rss_top_titles(url, n=6)
     if language.startswith("tr"):
-        script, caps = make_script_tr(heads)
+        s, caps = make_script_news(heads, language="tr")
     else:
-        script, caps = make_script_news(heads, language="en")
-    return script, caps, None
-
-
-# Turkish helpers
-def fetch_trends_tr(n: int = 3) -> List[Tuple[str, str]]:
-    url = "https://news.google.com/rss?hl=tr&gl=TR&ceid=TR:tr"
-    return _rss_top_titles(url, n=n)
-
-def make_script_tr(headlines: List[Tuple[str, str]]) -> Tuple[str, List[str]]:
-    return make_script_news(headlines, language="tr")
-
-
-if __name__ == "__main__":
-    md = os.getenv("THEME", "crypto")
-    script, caps, coins_data = generate_script(
-        mode=md,
-        language=os.getenv("LANGUAGE", "en"),
-        region=os.getenv("REGION", "US"),
-        rss_url=os.getenv("RSS_URL"),
-        story_topic=os.getenv("STORY_TOPIC"),
-    )
-    meta = build_titles(
-        md,
-        captions=caps,
-        coins_data=coins_data,
-        title_prefix=os.getenv("VIDEO_TITLE_PREFIX"),
-    )
-    print("SCRIPT:\n", script)
-    print("\nCAPTIONS:", caps)
-    print("\nTITLE:", meta.title)
-    print("\nDESC:\n", meta.description)
-    if meta.captions:
-        print("\nTITLE CAPTIONS:", meta.captions)
+        s, caps = make_script_news(heads, language="en")
+    return s, caps, None
