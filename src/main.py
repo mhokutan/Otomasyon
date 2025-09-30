@@ -11,6 +11,7 @@ def _load_local_module(name: str):
         print(f"[import warning] {name} import edilemedi: {exc}", flush=True)
         return None
 
+# Hem src. ad alanından hem kökten dene (repo yapına uyumlu)
 _scriptgen = _load_local_module("src.scriptgen") or _load_local_module("scriptgen")
 _tts       = _load_local_module("src.tts")       or _load_local_module("tts")
 _video     = _load_local_module("src.video")     or _load_local_module("video")
@@ -56,7 +57,9 @@ def main() -> None:
 
     print(">> Generating script...", flush=True)
     try:
-        script, captions, coins_data = generate_script(theme, language=lang, region=region, rss_url=rss_url, story_topic=story_topic)
+        script, captions, coins_data = generate_script(
+            theme, language=lang, region=region, rss_url=rss_url, story_topic=story_topic
+        )
     except Exception as e:
         _append_error(f"[script warning] {e}")
         script = "A daily episode."
@@ -66,18 +69,47 @@ def main() -> None:
 
     print(">> Building SEO metadata...", flush=True)
     try:
-        meta = build_titles(theme, captions=captions, coins_data=coins_data, title_prefix=_env("VIDEO_TITLE_PREFIX"))
-        title, description = meta.title or "Auto Episode", meta.description or ""
-        tags = meta.tags or []
+        meta = build_titles(
+            theme,
+            captions=captions,
+            coins_data=coins_data,
+            title_prefix=_env("VIDEO_TITLE_PREFIX")
+        )
+        # meta.tags bazı versiyonlarda yok olabilir → güvenli çek
+        title = getattr(meta, "title", None) or "Auto Episode"
+        description = getattr(meta, "description", None) or ""
+        tags = getattr(meta, "tags", None) or []
     except Exception as e:
         _append_error(f"[title warning] {e}")
         title, description, tags = "Auto Episode", "", []
-    print("TITLE:", title, flush=True)
 
-    # TTS settings — slower + gap for longer runtime
+    # 🔎 Log’a kısa özet
+    print("TITLE:", title, flush=True)
+    if description:
+        print("DESCRIPTION(200):", (description[:200] + ("..." if len(description) > 200 else "")), flush=True)
+    else:
+        print("DESCRIPTION: (empty)", flush=True)
+
+    # 📝 SEO meta dosyasına da yaz (workflow’ın da kullanabilmesi için)
+    try:
+        seo_payload = {
+            "title": title,
+            "description": description,
+            "tags": tags,
+            "language": lang,
+            "theme": theme,
+            "captions": captions,
+        }
+        with open("out/seo_meta.json", "w", encoding="utf-8") as f:
+            json.dump(seo_payload, f, ensure_ascii=False, indent=2)
+        print(">> SEO meta saved → out/seo_meta.json", flush=True)
+    except Exception as e:
+        _append_error(f"[seo write warning] {e}")
+
+    # TTS ayarları — süreyi uzatmak için daha yavaş tempo + cümle arası boşluk
     voice   = _env("TTS_VOICE","alloy") or "alloy"
-    atempo  = _env("TTS_ATEMPO","0.95") or "0.95"
-    gap_ms  = _env("TTS_GAP_MS","300") or "300"
+    atempo  = _env("TTS_ATEMPO","0.95") or "0.95"   # < 1.0 = daha yavaş
+    gap_ms  = _env("TTS_GAP_MS","300") or "300"     # 300ms ara
     bitrate = _env("TTS_BITRATE","128k") or "128k"
 
     ts = _ts()
@@ -87,7 +119,10 @@ def main() -> None:
     print(">> TTS...", flush=True)
     try:
         if callable(synth_tts_to_mp3) and (_env("OPENAI_API_KEY") or "").strip():
-            synth_tts_to_mp3(script, mp3_path, voice=voice, atempo=atempo, gap_ms=gap_ms, bitrate=bitrate)
+            synth_tts_to_mp3(
+                script, mp3_path,
+                voice=voice, atempo=atempo, gap_ms=gap_ms, bitrate=bitrate
+            )
         else:
             raise RuntimeError("TTS unavailable")
     except Exception as e:
@@ -97,14 +132,24 @@ def main() -> None:
 
     print(">> Render video...", flush=True)
     try:
-        make_slideshow_video(images=[], captions=captions, audio_mp3=mp3_path, out_mp4=mp4_path, theme=theme, ticker_text=None)
+        make_slideshow_video(
+            images=[],
+            captions=captions,
+            audio_mp3=mp3_path,
+            out_mp4=mp4_path,
+            theme=theme,
+            ticker_text=None
+        )
     except Exception as e:
         _append_error(f"[render warning] {e}")
-        # last-chance: solid color + audio
+        # last-chance: düz siyah arka plan + ses
         subprocess.run([
-            "ffmpeg","-y","-f","lavfi","-i","color=c=black:s=1080x1920:d=9999",
-            "-i", mp3_path, "-c:v","libx264","-pix_fmt","yuv420p",
-            "-shortest","-movflags","+faststart", mp4_path
+            "ffmpeg","-y",
+            "-f","lavfi","-i","color=c=black:s=1080x1920:d=9999",
+            "-i", mp3_path,
+            "-c:v","libx264","-pix_fmt","yuv420p",
+            "-shortest","-movflags","+faststart",
+            mp4_path
         ], check=True)
 
     print(f">> Done: {mp4_path}", flush=True)
@@ -112,18 +157,19 @@ def main() -> None:
     print(">> Upload (if creds)...", flush=True)
     try:
         if callable(try_upload_youtube) and _env("YT_CLIENT_ID") and _env("YT_CLIENT_SECRET") and _env("YT_REFRESH_TOKEN"):
-            # Prefer YT_TAGS env override; else use SEO tags
+            # Env’den override edilen etiketler varsa onları kullan; yoksa SEO’dan gelenler
             env_tags = [t.strip() for t in (_env("YT_TAGS","") or "").split(",") if t.strip()]
             tag_list = env_tags or tags
             url = try_upload_youtube(
                 video_path=mp4_path,
                 title=title,
-                description=description,
+                description=description,   # 🔥 açıklama YouTube’a gider
                 privacy_status=(_env("YT_PRIVACY","public") or "public"),
                 category_id="22",
                 tags=tag_list
             )
-            if url: print(">> Uploaded:", url, flush=True)
+            if url:
+                print(">> Uploaded:", url, flush=True)
         else:
             print(">> Upload skipped (missing creds).", flush=True)
     except Exception as e:
