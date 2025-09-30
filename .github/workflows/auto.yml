@@ -3,7 +3,7 @@ name: yt-auto-story
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */8 * * *"  # UTC; günde 3 kez
+    - cron: "0 */8 * * *" # UTC; günde 3 kez
 
 jobs:
   publish-story:
@@ -63,12 +63,12 @@ jobs:
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
 
-          # (Opsiyonel) Seriyi tek dil hattına sabitle:
+          # Seriyi tek hat üzerinden takip etmek istersen:
           SERIES_LANG_KEY: "en"
           SERIES_NAME: "Mystery Files"
           SERIES_SEASON: "1"
 
-          # 🔊 OpenAI
+          # OpenAI
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL != '' && vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
           OPENAI_MODEL_CHAT: ${{ vars.OPENAI_MODEL_CHAT != '' && vars.OPENAI_MODEL_CHAT || 'gpt-4o-mini' }}
@@ -116,7 +116,7 @@ jobs:
           fi
 
           echo "Seçilen video: $latest"
-          # 🎧 Ses akışı kontrolü
+          # Ses var mı?
           if ! ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 "$latest" | grep -q .; then
             echo "::error::Videoda audio stream yok. TTS başarısız olmuş olabilir. out/run_${{ matrix.lang }}.log dosyasını kontrol edin."
             exit 1
@@ -124,31 +124,32 @@ jobs:
 
           echo "video_path=$latest" >> "$GITHUB_OUTPUT"
 
-      # 🔎 SEO meta'yı (out/seo_meta.json) oku ve çıktıları ayarla
-      - name: Read SEO metadata
+      - name: Read SEO metadata (from out/seo_meta.json)
         id: seo
+        env:
+          FALLBACK_TITLE: ${{ matrix.title_prefix }} Daily Auto Story
+          FALLBACK_DESC: Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Auto upload
         run: |
           set -euo pipefail
-          if [ ! -f out/seo_meta.json ]; then
-            echo "::warning::out/seo_meta.json yok; fallback başlık/açıklama kullanılacak"
-            echo "title=" >> "$GITHUB_OUTPUT"
-            echo "description=" >> "$GITHUB_OUTPUT"
-            echo "tags_csv=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           python - << 'PY'
-          import os, json
-          meta = json.load(open("out/seo_meta.json", encoding="utf-8"))
-          title = meta.get("title","")
-          desc  = meta.get("description","")
-          tags  = meta.get("tags","")
-          if isinstance(tags, list):
-              tags = ",".join(t for t in tags if t and isinstance(t,str))
+          import os, json, pathlib, sys
+          p = pathlib.Path("out/seo_meta.json")
+          title = os.environ.get("FALLBACK_TITLE","Auto Story")
+          desc  = os.environ.get("FALLBACK_DESC","")
+          tags  = "shorts,story,ai"
+          if p.exists():
+              try:
+                  d = json.loads(p.read_text(encoding="utf-8"))
+                  title = d.get("title") or title
+                  desc  = d.get("description") or desc
+                  tags  = d.get("tags") or tags
+              except Exception as e:
+                  print(f"::warning::seo_meta.json parse failed: {e}")
           go = os.environ["GITHUB_OUTPUT"]
           with open(go, "a", encoding="utf-8") as f:
-              f.write("title<<EOX\n"+(title or "")+"\nEOX\n")
-              f.write("description<<EOY\n"+(desc or "")+"\nEOY\n")
-              f.write("tags_csv="+(tags or "")+"\n")
+              f.write(f"title<<EOF\n{title}\nEOF\n")
+              f.write(f"description<<EOF\n{desc}\nEOF\n")
+              f.write(f"tags_csv={tags}\n")
           PY
 
       - name: Auth smoke test (YouTube)
@@ -183,10 +184,11 @@ jobs:
           SEO_DESC: ${{ steps.seo.outputs.description }}
           SEO_TAGS_CSV: ${{ steps.seo.outputs.tags_csv }}
 
-          # Fallback'ler
+          # Fallback
           FALLBACK_TITLE: ${{ matrix.title_prefix }} Daily Auto Story
-          FALLBACK_DESC: Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Otomasyon yüklemesi
+          FALLBACK_DESC: Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Auto upload
 
+          # YouTube creds
           YT_PRIVACY: "public"
           YT_MADE_FOR_KIDS: "false"
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
@@ -201,7 +203,7 @@ jobs:
 
           echo "Yüklenecek dosya: $VIDEO_PATH"
           echo "Başlık: $TITLE"
-          echo "Açıklama(ilk 160): ${DESC:0:160}..."
+          echo "Açıklama (ilk 160): ${DESC:0:160}..."
           echo "Etiketler: $TAGS"
 
           python - << 'PY'
@@ -219,56 +221,58 @@ jobs:
                   json.dump(obj, f, ensure_ascii=False, indent=2)
 
           def creds() -> Credentials:
-              cid = os.environ["YT_CLIENT_ID"]; csec = os.environ["YT_CLIENT_SECRET"]; rtok = os.environ["YT_REFRESH_TOKEN"]
-              c = Credentials(None, refresh_token=rtok, client_id=cid, client_secret=csec, token_uri="https://oauth2.googleapis.com/token")
+              c = Credentials(
+                  None,
+                  refresh_token=os.environ["YT_REFRESH_TOKEN"],
+                  client_id=os.environ["YT_CLIENT_ID"],
+                  client_secret=os.environ["YT_CLIENT_SECRET"],
+                  token_uri="https://oauth2.googleapis.com/token",
+              )
               c.refresh(Request())
               return c
 
           vp = pathlib.Path(os.environ["VIDEO_PATH"])
           if not vp.exists() or vp.stat().st_size <= 0:
-              raise RuntimeError(f"Video yok/boş: {vp}")
+              raise SystemExit("Video bulunamadı/boş: " + str(vp))
 
-          title = os.environ.get("TITLE","Auto Story")[:95]
-          desc  = os.environ.get("DESC","")[:4900]
-          tags  = [t.strip() for t in os.environ.get("TAGS","").split(",") if t.strip()]
+          tags = [t.strip() for t in os.environ.get("TAGS", os.environ.get("TAGS", "")).split(",") if t.strip()]
+          if not tags:
+              tags = [t.strip() for t in os.environ.get("SEO_TAGS_CSV","").split(",") if t.strip()]
 
-          yt = build("youtube","v3",credentials=creds(), cache_discovery=False)
+          yt = build("youtube", "v3", credentials=creds(), cache_discovery=False)
           body = {
-            "snippet": {
-              "title": title,
-              "description": desc,
-              "categoryId": "22",
-              **({"tags": tags} if tags else {})
-            },
-            "status": {
-              "privacyStatus": os.environ.get("YT_PRIVACY","public"),
-              "selfDeclaredMadeForKids": os.environ.get("YT_MADE_FOR_KIDS","false").lower() in ("1","true","yes","on")
-            }
+              "snippet": {
+                  "title": os.environ.get("TITLE","Auto Story")[:95],
+                  "description": os.environ.get("DESC","")[:4900],
+                  "categoryId": "22",
+                  **({"tags": tags} if tags else {})
+              },
+              "status": {
+                  "privacyStatus": os.environ.get("YT_PRIVACY","public"),
+                  "selfDeclaredMadeForKids": os.environ.get("YT_MADE_FOR_KIDS","false").lower() in ("1","true","yes","on"),
+              },
           }
 
-          mime,_ = mimetypes.guess_type(str(vp))
+          mime, _ = mimetypes.guess_type(str(vp))
           media = MediaFileUpload(str(vp), mimetype=mime or "video/mp4", chunksize=1024*1024, resumable=True)
           req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
 
-          resp=None; last=-1; start=time.monotonic()
+          resp = None; last=-1; start=time.monotonic()
           while resp is None:
               status, resp = req.next_chunk()
-              if status and hasattr(status,"progress"):
+              if status and hasattr(status, "progress"):
                   try:
                       pct = int(float(status.progress())*100)
                       if pct != last:
-                          print(f"[upload] {pct}%"); last = pct
-                  except: pass
+                          print(f"[upload] {pct}%"); last=pct
+                  except Exception:
+                      pass
               if time.monotonic()-start > 1800:
                   raise RuntimeError("Upload timed out (1800s)")
           dump_json("out/youtube_response.json", resp or {})
           vid = (resp or {}).get("id")
           print("[done] https://youtu.be/"+vid if vid else "[done] (id yok)")
           PY
-        env:
-          TITLE: ${{ env.TITLE || '' }}
-          DESC: ${{ env.DESC || '' }}
-          TAGS: ${{ env.TAGS || '' }}
 
       - name: Upload artifact (${{ matrix.lang }})
         uses: actions/upload-artifact@v4
