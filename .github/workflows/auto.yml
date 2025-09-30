@@ -17,9 +17,6 @@ jobs:
           - lang: en
             region: US
             title_prefix: "Mystery Story:"
-          - lang: tr
-            region: TR
-            title_prefix: "Gizemli Hikaye:"
 
     steps:
       - name: Checkout
@@ -66,7 +63,12 @@ jobs:
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
 
-          # 🔊 TTS ve Chat için OpenAI ortam değişkenleri (secrets boşsa vars’a düşer)
+          # (Opsiyonel) Seriyi tek dil hattına sabitle:
+          SERIES_LANG_KEY: "en"
+          SERIES_NAME: "Mystery Files"
+          SERIES_SEASON: "1"
+
+          # 🔊 OpenAI
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' && secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL != '' && vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
           OPENAI_MODEL_CHAT: ${{ vars.OPENAI_MODEL_CHAT != '' && vars.OPENAI_MODEL_CHAT || 'gpt-4o-mini' }}
@@ -74,12 +76,12 @@ jobs:
           OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS != '' && vars.OPENAI_MAX_TOKENS || '400' }}
           OPENAI_TEMPERATURE: ${{ vars.OPENAI_TEMPERATURE != '' && vars.OPENAI_TEMPERATURE || '0.7' }}
 
-          # TTS ayarları
+          # TTS
           TTS_VOICE: ${{ vars.TTS_VOICE != '' && vars.TTS_VOICE || 'alloy' }}
           TTS_ATEMPO: ${{ vars.TTS_ATEMPO != '' && vars.TTS_ATEMPO || '1.07' }}
           TTS_BITRATE: ${{ vars.TTS_BITRATE != '' && vars.TTS_BITRATE || '128k' }}
 
-          # Video oluşturma
+          # Video
           BG_IMAGES_PER_SLIDE: ${{ vars.BG_IMAGES_PER_SLIDE != '' && vars.BG_IMAGES_PER_SLIDE || '4' }}
           FPS: ${{ vars.FPS != '' && vars.FPS || '60' }}
           CRF: ${{ vars.CRF != '' && vars.CRF || '22' }}
@@ -114,7 +116,7 @@ jobs:
           fi
 
           echo "Seçilen video: $latest"
-          # 🎧 Audio var mı? (yoksa upload'ı durdur)
+          # 🎧 Ses akışı kontrolü
           if ! ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 "$latest" | grep -q .; then
             echo "::error::Videoda audio stream yok. TTS başarısız olmuş olabilir. out/run_${{ matrix.lang }}.log dosyasını kontrol edin."
             exit 1
@@ -148,7 +150,7 @@ jobs:
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
           VIDEO_PATH: ${{ steps.build.outputs.video_path }}
-          TITLE: ${{ matrix.title_prefix }} ${{ matrix.lang == 'tr' && 'Günlük Otomatik Hikaye' || 'Daily Auto Story' }}
+          TITLE: ${{ matrix.title_prefix }} Daily Auto Story
           DESC: Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Otomasyon yüklemesi
           YT_PRIVACY: "public"
           YT_MADE_FOR_KIDS: "false"
@@ -162,10 +164,9 @@ jobs:
           python - << 'PY'
           from __future__ import annotations
           import os, json, mimetypes, pathlib, time
-          from typing import Any, Optional
+          from typing import Any
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
-          from googleapiclient.errors import HttpError
           from google.auth.transport.requests import Request
           from google.oauth2.credentials import Credentials
 
