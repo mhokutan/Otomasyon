@@ -1,235 +1,84 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import importlib
-import os
-import json
-import sys
-import time
-import traceback
-import subprocess
+import importlib, os, json, sys, time, subprocess
 from pathlib import Path
 from typing import Optional, List, Any
 
-
 def _load_local_module(name: str):
-    """Load a sibling module regardless of how this file is executed."""
-
-    relative_exc: Exception | None = None
-    if __package__:
-        try:
-            return importlib.import_module(f".{name}", __package__)
-        except Exception as exc:  # pragma: no cover - yalnızca hata kayıt için
-            relative_exc = exc
-
     try:
         return importlib.import_module(name)
-    except Exception as exc:  # pragma: no cover - yalnızca import hatası loglanır
-        if relative_exc and str(relative_exc) != str(exc):
-            detail = f"{exc} (relative import failed: {relative_exc})"
-        else:
-            detail = str(relative_exc or exc)
-        print(f"[import warning] {name} import edilemedi: {detail}", flush=True)
+    except Exception as exc:
+        print(f"[import warning] {name} import edilemedi: {exc}", flush=True)
         return None
 
+_scriptgen = _load_local_module("src.scriptgen") or _load_local_module("scriptgen")
+_tts       = _load_local_module("src.tts")       or _load_local_module("tts")
+_video     = _load_local_module("src.video")     or _load_local_module("video")
+_uploader  = _load_local_module("src.youtube_upload") or _load_local_module("youtube_upload")
 
-_scriptgen = _load_local_module("scriptgen")
-_tts = _load_local_module("tts")
-_video = _load_local_module("video")
-_uploader = _load_local_module("youtube_upload")
+generate_script       = getattr(_scriptgen, "generate_script", None)
+build_titles          = getattr(_scriptgen, "build_titles", None)
+synth_tts_to_mp3      = getattr(_tts, "synth_tts_to_mp3", None)
+make_slideshow_video  = getattr(_video, "make_slideshow_video", None)
+try_upload_youtube    = getattr(_uploader, "upload_video", None) or getattr(_uploader, "try_upload_youtube", None)
 
-generate_script = getattr(_scriptgen, "generate_script", None)
-build_titles    = getattr(_scriptgen, "build_titles", None)
-synth_tts_to_mp3 = getattr(_tts, "synth_tts_to_mp3", None)
-make_slideshow_video = getattr(_video, "make_slideshow_video", None)
-try_upload_youtube   = getattr(_uploader, "try_upload_youtube", None)
-
-# ---------- Yardımcılar ----------
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     v = os.getenv(name)
     return v if (v is not None and str(v).strip() != "") else default
 
-def _env_bool(name: str, default: bool = False) -> bool:
+def _env_bool(name: str, default: bool=False) -> bool:
     v = _env(name)
-    if v is None:
-        return default
-    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+    return default if v is None else str(v).strip().lower() in {"1","true","yes","on"}
 
 def _ts(fmt: str = "%Y%m%d-%H%M%S") -> str:
     return time.strftime(fmt, time.gmtime())
-
-def _safe_list(x: Any) -> List[str]:
-    if x is None:
-        return []
-    if isinstance(x, (list, tuple)):
-        return [str(i) for i in x]
-    return [str(x)]
 
 def _append_error(msg: str) -> None:
     Path("out").mkdir(parents=True, exist_ok=True)
     with open("out/error.log", "a", encoding="utf-8") as f:
         f.write(msg.rstrip() + "\n")
 
-def _print_youtube_error_summary() -> None:
-    path = Path("out/youtube_error.json")
-    if not path.exists():
-        print(">> YouTube upload hatasıyla ilgili ayrıntı bulunamadı (out/youtube_error.json yok).", flush=True)
-        return
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as e:
-        print(f">> youtube_error.json okunamadı: {e}", flush=True)
-        return
-
-    detail = None
-    if isinstance(data, dict):
-        detail = data.get("http_error") or data.get("error") or json.dumps(data, ensure_ascii=False)
-    if detail is None:
-        detail = json.dumps(data, ensure_ascii=False)
-
-    print(f">> YouTube upload hata özeti: {detail}", flush=True)
-
-def _ffmpeg_silence_mp3(out_mp3: str, seconds: int = 30) -> None:
-    """TTS yoksa/sorunluysa: 30 sn sessiz MP3 üret."""
+def _ffmpeg_silence_mp3(out_mp3: str, seconds: int = 45) -> None:
     cmd = [
-        "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
-        "-t", str(seconds),
-        "-acodec", "libmp3lame", "-q:a", "9",
-        out_mp3
+        "ffmpeg","-y","-f","lavfi","-i","anullsrc=r=44100:cl=mono",
+        "-t", str(seconds), "-acodec","libmp3lame","-q:a","9", out_mp3
     ]
     subprocess.run(cmd, check=True)
 
-def _fallback_black_video(image_w: int, image_h: int, audio_mp3: str, out_mp4: str) -> None:
-    """Görsel pipeline çökerse: siyah arka plan + ses ile MP4 üret (dikey 1080x1920)."""
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"color=c=black:s={image_w}x{image_h}:d=9999",
-        "-i", audio_mp3,
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-shortest",
-        "-movflags", "+faststart",
-        out_mp4
-    ]
-    subprocess.run(cmd, check=True)
-
-# ---------- Ana Akış ----------
 def main() -> None:
     Path("out").mkdir(parents=True, exist_ok=True)
 
-    if _env_bool("YT_VALIDATE_TOKEN", False):
-        validator = getattr(_uploader, "validate_refresh_token", None)
-        if callable(validator):
-            print(">> Validating YouTube refresh token...", flush=True)
-            try:
-                ok = bool(validator())
-            except Exception as e:
-                _append_error(f"[auth warning] refresh token validation failed: {e}")
-                print(
-                    ">> YouTube refresh token validation failed; see out/error.log for details.",
-                    flush=True,
-                )
-                return
-            if not ok:
-                _append_error("[auth warning] refresh token validation returned False")
-                print(
-                    ">> YouTube refresh token validation failed (False result).", flush=True
-                )
-                return
-        else:
-            print(
-                ">> YT_VALIDATE_TOKEN is set but validate_refresh_token() is unavailable; continuing.",
-                flush=True,
-            )
-
-    theme   = (_env("THEME", "crypto") or "crypto").lower()   # story/crypto/sports/news
-    lang    = _env("LANGUAGE", "en") or "en"
-    region  = _env("REGION", "US") or "US"
+    theme   = (_env("THEME","story") or "story").lower()
+    lang    = _env("LANGUAGE","en") or "en"
+    region  = _env("REGION","US") or "US"
     rss_url = _env("RSS_URL", None)
     story_topic = _env("STORY_TOPIC", None)
 
-    # 1) Senaryo üretimi (fallbacklı)
     print(">> Generating script...", flush=True)
-    script = ""
-    captions: List[str] = []
-    coins_data = None
-
     try:
-        if callable(generate_script):
-            s, c, coins_data = generate_script(
-                mode=theme, language=lang, region=region,
-                rss_url=rss_url, story_topic=story_topic
-            )
-            script = s if isinstance(s, str) else str(s or "")
-            captions = _safe_list(c)
-        else:
-            raise RuntimeError("generate_script fonksiyonu yok")
+        script, captions, coins_data = generate_script(theme, language=lang, region=region, rss_url=rss_url, story_topic=story_topic)
     except Exception as e:
-        _append_error(f"[script warning] generate_script failed: {e}")
-        # Basit varsayılan metinler
-        if lang == "tr":
-            script = "Bugün gizemli bir hikaye: Beklenmedik bir buluşma, şehir ışıkları altında başlar..."
-            captions = [
-                "Gizemli bir mektup...",
-                "Gece yarısı sokakları",
-                "Eski bir dost",
-                "Sır perdesi aralanıyor"
-            ]
-        else:
-            script = "A short mysterious tale: Under the city lights, an unexpected meeting unfolds..."
-            captions = [
-                "A strange letter",
-                "Midnight streets",
-                "An old friend",
-                "The secret revealed"
-            ]
+        _append_error(f"[script warning] {e}")
+        script = "A daily episode."
+        captions = ["Daily episode"]
+        coins_data = None
     print("SCRIPT:\n", script, flush=True)
 
-    # 2) Başlık & açıklama (fallbacklı)
+    print(">> Building SEO metadata...", flush=True)
     try:
-        title_prefix = _env("VIDEO_TITLE_PREFIX", {
-            "crypto": "Daily Crypto Brief:",
-            "sports": "Sports Brief:",
-            "news":   "Daily Brief:",
-            "story":  "Story:",
-        }.get(theme, "Daily Brief:"))
-        if callable(build_titles):
-            title_meta = build_titles(
-                theme,
-                captions=captions,
-                coins_data=coins_data,
-                title_prefix=title_prefix,
-            )
-            if hasattr(title_meta, "as_tuple") and callable(getattr(title_meta, "as_tuple")):
-                title, description = title_meta.as_tuple()
-            elif isinstance(title_meta, tuple) and len(title_meta) >= 2:
-                title, description = title_meta[:2]
-            elif isinstance(title_meta, dict):
-                title = title_meta.get("title")
-                description = title_meta.get("description")
-            else:
-                title = getattr(title_meta, "title", None)
-                description = getattr(title_meta, "description", None)
-
-            if not isinstance(title, str) or not isinstance(description, str):
-                raise TypeError("build_titles beklenmedik çıktı")
-        else:
-            raise RuntimeError("build_titles fonksiyonu yok")
+        meta = build_titles(theme, captions=captions, coins_data=coins_data, title_prefix=_env("VIDEO_TITLE_PREFIX"))
+        title, description = meta.title or "Auto Episode", meta.description or ""
+        tags = meta.tags or []
     except Exception as e:
-        _append_error(f"[title warning] build_titles failed: {e}")
-        if lang == "tr":
-            title = f"{title_prefix} Kısa Gizemli Hikaye"
-            description = "Otomatik üretilmiştir."
-        else:
-            title = f"{title_prefix} Short Mystery Story"
-            description = "Auto-generated."
+        _append_error(f"[title warning] {e}")
+        title, description, tags = "Auto Episode", "", []
     print("TITLE:", title, flush=True)
 
-    # 3) TTS (fallback: sessiz MP3)
-    voice    = _env("TTS_VOICE", "alloy") or "alloy"
-    atempo   = _env("TTS_ATEMPO", "1.05") or "1.05"
-    gap_ms   = _env("TTS_GAP_MS", "10") or "10"
-    bitrate  = _env("TTS_BITRATE", "128k") or "128k"
+    # TTS settings — slower + gap for longer runtime
+    voice   = _env("TTS_VOICE","alloy") or "alloy"
+    atempo  = _env("TTS_ATEMPO","0.95") or "0.95"
+    gap_ms  = _env("TTS_GAP_MS","300") or "300"
+    bitrate = _env("TTS_BITRATE","128k") or "128k"
 
     ts = _ts()
     mp3_path = f"out/voice-{ts}.mp3"
@@ -238,107 +87,52 @@ def main() -> None:
     print(">> TTS...", flush=True)
     try:
         if callable(synth_tts_to_mp3) and (_env("OPENAI_API_KEY") or "").strip():
-            synth_tts_to_mp3(
-                text=script, out_mp3=mp3_path,
-                voice=voice, atempo=atempo, gap_ms=gap_ms, bitrate=bitrate
-            )
+            synth_tts_to_mp3(script, mp3_path, voice=voice, atempo=atempo, gap_ms=gap_ms, bitrate=bitrate)
         else:
-            raise RuntimeError("TTS kullanılamıyor veya OPENAI_API_KEY yok")
+            raise RuntimeError("TTS unavailable")
     except Exception as e:
-        _append_error(f"[tts warning] synth_tts_to_mp3 failed: {e}")
-        # Sessiz mp3 üret
-        _ffmpeg_silence_mp3(mp3_path, seconds=30)
-        print(">> TTS yok, sessiz MP3 ile devam.", flush=True)
+        _append_error(f"[tts warning] {e}")
+        _ffmpeg_silence_mp3(mp3_path, seconds=60)
+        print(">> Silent MP3 fallback.", flush=True)
 
-    # 4) Video render (fallback: siyah arka plan)
     print(">> Render video...", flush=True)
-    rendered = False
     try:
-        if callable(make_slideshow_video):
-            # Görseller ağdan alınmıyor; captions ile slideshow oluştur.
-            make_slideshow_video(
-                images=[], captions=captions,
-                audio_mp3=mp3_path, out_mp4=mp4_path,
-                theme=theme, ticker_text=None
-            )
-            rendered = True
-        else:
-            raise RuntimeError("make_slideshow_video fonksiyonu yok")
+        make_slideshow_video(images=[], captions=captions, audio_mp3=mp3_path, out_mp4=mp4_path, theme=theme, ticker_text=None)
     except Exception as e:
-        _append_error(f"[render warning] slideshow failed: {e}")
-
-    if not rendered:
-        _fallback_black_video(1080, 1920, mp3_path, mp4_path)
+        _append_error(f"[render warning] {e}")
+        # last-chance: solid color + audio
+        subprocess.run([
+            "ffmpeg","-y","-f","lavfi","-i","color=c=black:s=1080x1920:d=9999",
+            "-i", mp3_path, "-c:v","libx264","-pix_fmt","yuv420p",
+            "-shortest","-movflags","+faststart", mp4_path
+        ], check=True)
 
     print(f">> Done: {mp4_path}", flush=True)
 
-    # 5) YouTube yükleme (opsiyonel; hata olsa da düşürme)
-    print(">> Trying YouTube upload (if creds exist)...", flush=True)
+    print(">> Upload (if creds)...", flush=True)
     try:
-        if not callable(try_upload_youtube):
-            msg = ">> YouTube uploader modülü bulunamadı; yükleme atlandı."
-            print(msg, flush=True)
-            _append_error("[upload warning] uploader module missing")
+        if callable(try_upload_youtube) and _env("YT_CLIENT_ID") and _env("YT_CLIENT_SECRET") and _env("YT_REFRESH_TOKEN"):
+            # Prefer YT_TAGS env override; else use SEO tags
+            env_tags = [t.strip() for t in (_env("YT_TAGS","") or "").split(",") if t.strip()]
+            tag_list = env_tags or tags
+            url = try_upload_youtube(
+                video_path=mp4_path,
+                title=title,
+                description=description,
+                privacy_status=(_env("YT_PRIVACY","public") or "public"),
+                category_id="22",
+                tags=tag_list
+            )
+            if url: print(">> Uploaded:", url, flush=True)
         else:
-            yt_client_id = _env("YT_CLIENT_ID")
-            yt_client_secret = _env("YT_CLIENT_SECRET")
-            yt_refresh_token = _env("YT_REFRESH_TOKEN")
-            missing_envs = [
-                name for name, value in {
-                    "YT_CLIENT_ID": yt_client_id,
-                    "YT_CLIENT_SECRET": yt_client_secret,
-                    "YT_REFRESH_TOKEN": yt_refresh_token,
-                }.items() if not value
-            ]
-            if missing_envs:
-                reason = ", ".join(missing_envs)
-                print(
-                    ">> YouTube yüklemesi yapılamadı: eksik ortam değişkenleri: "
-                    + reason,
-                    flush=True,
-                )
-                _append_error(
-                    "[upload warning] missing required env vars for YouTube upload: " + reason
-                )
-            else:
-                privacy = (_env("YT_PRIVACY", "public") or "public").lower().strip()
-                valid_privacy_values = {"public", "private", "unlisted"}
-                if privacy not in valid_privacy_values:
-                    warn_msg = (
-                        f">> YouTube privacy ayarı '{privacy}' geçersiz; 'public' kullanılacak."
-                    )
-                    print(warn_msg, flush=True)
-                    _append_error("[upload warning] invalid YT_PRIVACY value: " + privacy)
-                    privacy = "public"
-                url = try_upload_youtube(
-                    mp4_path,
-                    title=title,
-                    description=description,
-                    privacy_status=privacy,
-                )
-                if url:
-                    print(">> Uploaded:", url, flush=True)
-                else:
-                    _append_error("[upload warning] uploader returned no URL")
-                    print(">> Upload skipped or failed (no URL).", flush=True)
-                    _print_youtube_error_summary()
+            print(">> Upload skipped (missing creds).", flush=True)
     except Exception as e:
         _append_error(f"[upload warning] {e}")
         print(f"[upload warning] {e}", flush=True)
-        _print_youtube_error_summary()
 
-    # ÖNEMLİ: Asla sys.exit(1) yapma; loglara yazdık ve fallback ile çıktıyı ürettik.
-    return
-
-# ---------- Giriş Noktası ----------
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
-        # Yine de beklenmeyen bir şey olursa iş düşmesin; logla ve sıfırla bitir.
-        Path("out").mkdir(parents=True, exist_ok=True)
-        with open("out/error.log", "a", encoding="utf-8") as f:
-            traceback.print_exc(file=f)
-        traceback.print_exc()
-        # exit(0) → job yeşil kalsın
+    except Exception as e:
+        _append_error(f"[fatal] {e}")
         sys.exit(0)
