@@ -8,7 +8,7 @@ on:
 jobs:
   publish-story:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 60   # ⬅️ 30 -> 60
 
     strategy:
       fail-fast: false
@@ -63,7 +63,7 @@ jobs:
           REGION: ${{ matrix.region }}
           VIDEO_TITLE_PREFIX: ${{ matrix.title_prefix }}
 
-          # Seriyi tek hat üzerinden takip etmek istersen:
+          # Seri sabitleme
           SERIES_LANG_KEY: "en"
           SERIES_NAME: "Mystery Files"
           SERIES_SEASON: "1"
@@ -76,25 +76,27 @@ jobs:
           OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS != '' && vars.OPENAI_MAX_TOKENS || '400' }}
           OPENAI_TEMPERATURE: ${{ vars.OPENAI_TEMPERATURE != '' && vars.OPENAI_TEMPERATURE || '0.7' }}
 
-          # TTS
+          # 🔊 TTS
           TTS_VOICE: ${{ vars.TTS_VOICE != '' && vars.TTS_VOICE || 'alloy' }}
           TTS_ATEMPO: ${{ vars.TTS_ATEMPO != '' && vars.TTS_ATEMPO || '1.07' }}
+          TTS_GAP_MS: ${{ vars.TTS_GAP_MS != '' && vars.TTS_GAP_MS || '150' }}   # ⬅️ boşlukları kısalt
           TTS_BITRATE: ${{ vars.TTS_BITRATE != '' && vars.TTS_BITRATE || '128k' }}
 
-          # Video
-          BG_IMAGES_PER_SLIDE: ${{ vars.BG_IMAGES_PER_SLIDE != '' && vars.BG_IMAGES_PER_SLIDE || '4' }}
-          FPS: ${{ vars.FPS != '' && vars.FPS || '60' }}
-          CRF: ${{ vars.CRF != '' && vars.CRF || '22' }}
+          # 🎬 Video (daha hızlı render)
+          BG_IMAGES_PER_SLIDE: ${{ vars.BG_IMAGES_PER_SLIDE != '' && vars.BG_IMAGES_PER_SLIDE || '2' }}  # ⬅️ 4 -> 2
+          FPS: ${{ vars.FPS != '' && vars.FPS || '30' }}                                                 # ⬅️ 60 -> 30
+          CRF: ${{ vars.CRF != '' && vars.CRF || '24' }}                                                 # ⬅️ 22 -> 24
           ALLOW_NET_BG: ${{ vars.ALLOW_NET_BG != '' && vars.ALLOW_NET_BG || '0' }}
-          NET_TIMEOUT: ${{ vars.NET_TIMEOUT != '' && vars.NET_TIMEOUT || '20' }}
-          MAX_BG_SIZE_MB: ${{ vars.MAX_BG_SIZE_MB != '' && vars.MAX_BG_SIZE_MB || '8' }}
+          NET_TIMEOUT: ${{ vars.NET_TIMEOUT != '' && vars.NET_TIMEOUT || '15' }}
+          MAX_BG_SIZE_MB: ${{ vars.MAX_BG_SIZE_MB != '' && vars.MAX_BG_SIZE_MB || '6' }}
+          FFMPEG_TIMEOUT: ${{ vars.FFMPEG_TIMEOUT != '' && vars.FFMPEG_TIMEOUT || '180' }}
 
           # Presenter/overlay
           BREAKING_ON: ${{ vars.BREAKING_ON != '' && vars.BREAKING_ON || '0' }}
           BREAKING_TEXT: ${{ vars.BREAKING_TEXT != '' && vars.BREAKING_TEXT || 'BREAKING' }}
           PRESENTER_URL: ${{ vars.PRESENTER_URL }}
           PRESENTER_POS: ${{ vars.PRESENTER_POS != '' && vars.PRESENTER_POS || 'top-right' }}
-          PRESENTER_SIZE: ${{ vars.PRESENTER_SIZE != '' && vars.PRESENTER_SIZE || '260' }}
+          PRESENTER_SIZE: ${{ vars.PRESENTER_SIZE != '' && vars.PRESENTER_SIZE || '220' }}  # ⬅️ biraz küçülttük
           PRESENTER_INITIALS: ${{ vars.PRESENTER_INITIALS != '' && vars.PRESENTER_INITIALS || 'AI' }}
 
           HF_TOKEN: ${{ secrets.HF_TOKEN != '' && secrets.HF_TOKEN || vars.HF_TOKEN }}
@@ -132,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           python - << 'PY'
-          import os, json, pathlib, sys
+          import os, json, pathlib
           p = pathlib.Path("out/seo_meta.json")
           title = os.environ.get("FALLBACK_TITLE","Auto Story")
           desc  = os.environ.get("FALLBACK_DESC","")
@@ -178,17 +180,11 @@ jobs:
         if: ${{ steps.gates.outputs.has_yt == 'true' }}
         env:
           VIDEO_PATH: ${{ steps.build.outputs.video_path }}
-
-          # SEO çıktılar
           SEO_TITLE: ${{ steps.seo.outputs.title }}
           SEO_DESC: ${{ steps.seo.outputs.description }}
           SEO_TAGS_CSV: ${{ steps.seo.outputs.tags_csv }}
-
-          # Fallback
           FALLBACK_TITLE: ${{ matrix.title_prefix }} Daily Auto Story
           FALLBACK_DESC: Lang=${{ matrix.lang }}, Region=${{ matrix.region }} • Auto upload
-
-          # YouTube creds
           YT_PRIVACY: "public"
           YT_MADE_FOR_KIDS: "false"
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
@@ -207,7 +203,6 @@ jobs:
           echo "Etiketler: $TAGS"
 
           python - << 'PY'
-          from __future__ import annotations
           import os, json, mimetypes, pathlib, time
           from typing import Any
           from googleapiclient.discovery import build
@@ -221,13 +216,11 @@ jobs:
                   json.dump(obj, f, ensure_ascii=False, indent=2)
 
           def creds() -> Credentials:
-              c = Credentials(
-                  None,
+              c = Credentials(None,
                   refresh_token=os.environ["YT_REFRESH_TOKEN"],
                   client_id=os.environ["YT_CLIENT_ID"],
                   client_secret=os.environ["YT_CLIENT_SECRET"],
-                  token_uri="https://oauth2.googleapis.com/token",
-              )
+                  token_uri="https://oauth2.googleapis.com/token")
               c.refresh(Request())
               return c
 
@@ -235,42 +228,39 @@ jobs:
           if not vp.exists() or vp.stat().st_size <= 0:
               raise SystemExit("Video bulunamadı/boş: " + str(vp))
 
-          tags = [t.strip() for t in os.environ.get("TAGS", os.environ.get("TAGS", "")).split(",") if t.strip()]
+          tags = [t.strip() for t in os.environ.get("TAGS","").split(",") if t.strip()]
           if not tags:
               tags = [t.strip() for t in os.environ.get("SEO_TAGS_CSV","").split(",") if t.strip()]
 
-          yt = build("youtube", "v3", credentials=creds(), cache_discovery=False)
+          yt = build("youtube","v3",credentials=creds(), cache_discovery=False)
           body = {
-              "snippet": {
-                  "title": os.environ.get("TITLE","Auto Story")[:95],
-                  "description": os.environ.get("DESC","")[:4900],
-                  "categoryId": "22",
-                  **({"tags": tags} if tags else {})
-              },
-              "status": {
-                  "privacyStatus": os.environ.get("YT_PRIVACY","public"),
-                  "selfDeclaredMadeForKids": os.environ.get("YT_MADE_FOR_KIDS","false").lower() in ("1","true","yes","on"),
-              },
+            "snippet": {
+              "title": os.environ.get("TITLE","Auto Story")[:95],
+              "description": os.environ.get("DESC","")[:4900],
+              "categoryId": "22",
+              **({"tags": tags} if tags else {})
+            },
+            "status": {
+              "privacyStatus": os.environ.get("YT_PRIVACY","public"),
+              "selfDeclaredMadeForKids": os.environ.get("YT_MADE_FOR_KIDS","false").lower() in ("1","true","yes","on"),
+            }
           }
-
-          mime, _ = mimetypes.guess_type(str(vp))
+          mime,_ = mimetypes.guess_type(str(vp))
           media = MediaFileUpload(str(vp), mimetype=mime or "video/mp4", chunksize=1024*1024, resumable=True)
           req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
 
-          resp = None; last=-1; start=time.monotonic()
+          resp=None; last=-1; start=time.monotonic()
           while resp is None:
               status, resp = req.next_chunk()
-              if status and hasattr(status, "progress"):
+              if status and hasattr(status,"progress"):
                   try:
-                      pct = int(float(status.progress())*100)
-                      if pct != last:
-                          print(f"[upload] {pct}%"); last=pct
-                  except Exception:
-                      pass
-              if time.monotonic()-start > 1800:
+                      pct=int(float(status.progress())*100)
+                      if pct!=last: print(f"[upload] {pct}%"); last=pct
+                  except Exception: pass
+              if time.monotonic()-start>1800:
                   raise RuntimeError("Upload timed out (1800s)")
           dump_json("out/youtube_response.json", resp or {})
-          vid = (resp or {}).get("id")
+          vid=(resp or {}).get("id")
           print("[done] https://youtu.be/"+vid if vid else "[done] (id yok)")
           PY
 
